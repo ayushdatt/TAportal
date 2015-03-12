@@ -8,15 +8,14 @@
 ## - call exposes all registered services (none by default)
 #########################################################################  
 
+
 from gluon.sqlhtml import form_factory
 import socket
 from reportlab.platypus import *
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.rl_config import defaultPageSize
-from reportlab.lib.units import inch, mm
-from reportlab.lib.enums import TA_LEFT, TA_RIGHT, TA_CENTER, TA_JUSTIFY
-from reportlab.lib import colors
+from reportlab.lib.units import inch
+from reportlab.lib.enums import TA_LEFT, TA_RIGHT, TA_CENTER
 from uuid import uuid4
 from cgi import escape
 import os
@@ -28,48 +27,53 @@ OrderedDict=local_import('ordereddict')
 CAS.login_url='https://login.iiit.ac.in/cas/login'
 CAS.check_url='https://login.iiit.ac.in/cas/validate'
 CAS.logout_url='https://login.iiit.ac.in/cas/logout'
-CAS.my_url='http://taship.iiit.ac.in/taship/default/login'
-#CAS.my_url='http://localhost:8001/taship/default/login'
+#CAS.my_url='http://taship.iiit.ac.in/taship/default/login'
+CAS.my_url='http://localhost:8000/taship/default/login'
 
 
-# ---------- HOME PAGE IS SAME FOR ALL THE USERS --------------------
+# User's Roles
+user_roles = {"none": 0,
+              "admin": 1,
+              "student": 2,
+              "faculty": 3}
 
-if not session.token and not request.function=='login':
-    redirect(URL(r=request, f='login'))
-
-#-------------------------------------------------------------------------------
-def login():
-    session.login = 0 
-    session.token = CAS.login(request)
-    sem=db(db.Semester.id>0).select()
-    if sem:
-       session.current_semester = sem[0].semname
-    return dict(mesg="taship")
-#-------------------------------------------------------------------------------
+#---------- Global VAriables ----------------------------------------
 name=""
 roll=""
 fac=[]
 
-def retrieve():
+# print "sesion", session
+
+# ---------- HOME PAGE IS SAME FOR ALL THE USERS --------------------
+
+if not session.username and not request.function=='login':
+    redirect(URL(r=request, f='login'))
+
+#-------------------------------------------------------------------------------
+def login():
+    session.role = user_roles["none"]
+    session.username = CAS.login(request)
+    sem=db(db.Semester.id>0).select()
+    if sem:
+       session.current_semester = sem[0].semname
+    return dict(message="taship")
+#-------------------------------------------------------------------------------
+
+def retrieveUserInfo():
     global name
     global roll
-    username=session.token
-    password=session.password
     l = ldap.initialize("ldap://ldap.iiit.ac.in")
-    username=session.token
-    password=session.password
-   # l.simple_bind_s(username, password)
+    username = session.username
+    password = session.password
     l.protocol_version = ldap.VERSION3  
    
     baseDN = "ou=Users,dc=iiit,dc=ac,dc=in"
     searchScope = ldap.SCOPE_SUBTREE
     searchFilter = "mail="+username
-   # p=ldap.filter.escape_filter_chars([username])
-       
     
     result = l.search_s(baseDN, searchScope, searchFilter)
     entry = result[0]
-    name=entry[1]['cn'][0]
+    name = entry[1]['cn'][0]
     if 'uidNumber' in entry[1]:
         roll = entry[1]['uidNumber'][0]
     else:
@@ -77,96 +81,74 @@ def retrieve():
 #-------------------------------------------------------------------------------
 def logout():
     u=None
-    if session.login==1:
+    if session.role == user_roles["admin"]:
         u="admin"
-    elif session.login==2:
+    elif session.role == user_roles["student"]:
         u="student"
-    elif session.login==3:
+    elif session.role== user_roles["faculty"]:
         u="faculty"
-    db.auth_event.insert(description="logged out",origin=session.token,user_type=u,name=session.name,uid=session.roll)
+    db.auth_event.insert(description="logged out",origin=session.username,user_type=u,name=session.name,uid=session.roll)
     
-    session.token=None
+    session.username=None
     CAS.logout()
 #-------------------------------------------------------------------------------
 def cprofile_display():
-	if session.login!=1 and session.login!=3:
-		redirect(URL(r=request,f='index'))
-		return dict()
-	id1=request.args(0)
-	        
-	rows1 = db(db.Course.cid==id1).select()
-	  #  rows2 = db((db.Teach.course_id==db.rows1.Course.id)&(db.Faculty.id==db.Teach.faculty_id)).select()
-	response.flash=id1
-	return dict(rows1=rows1)
-#---------------------- testing ignore------------------------------------------
-def a():
-    return dict()
-#-------------------------------------------------------------------------------
+    if session.role != user_roles["admin"] and session.role != user_roles["faculty"]:
+        redirect(URL(r=request,f='index'))
+        return dict()
+    id1=request.args(0)
+            
+    rows1 = db(db.Course.cid==id1).select()
+    response.flash=id1
+    return dict(rows1=rows1)
 
 #-------------------------------------------------------------------------------
 def home_page():
-    retrieve()
-    session.name=name
-    session.roll=roll
-    if session.login == 0 :
-        if (session.token and session.token.split('@')[1] == "students.iiit.ac.in"):
-	    session.mark = {}
-            emailValue = db(db.Admin.ademail_id == session.token).select(db.Admin.ademail_id)
-            if( emailValue ):
-                db.auth_event.insert(origin=session.token,user_type="admin",description="logged in",name=session.name,uid=session.roll)
-                redirect(URL(r=request,f='sp_check'))
-            else:
-                db.auth_event.insert(origin=session.token,user_type="student",description="logged in",name=session.name,uid=session.roll)
-                session.login =2
-                session.student_email = session.token
-		query = db(db.Applicant.aprollno == session.roll).select().first()
-		if query:
-		    if not db(db.SelectedTA.appid == query.id).select():
-			 query.apemail_id = session.student_email
-			 query.update_record()
-		         #query = db(db.Applicant.aprollno == session.roll).update(apemail_id = session.student_email)
-		    else:
-			session.student_email = query.apemail_id
-        if (session.token and session.token.split('@')[1] == "research.iiit.ac.in"):
-	    session.mark = {}
-            emailValue = db(db.Admin.ademail_id == session.token).select(db.Admin.ademail_id)
-            if( emailValue ):
-                db.auth_event.insert(origin=session.token,user_type="admin",description="logged in",name=session.name,uid=session.roll)
-                redirect(URL(r=request,f='sp_check'))
-            else:
-                db.auth_event.insert(origin=session.token,user_type="student",description="logged in",name=session.name,uid=session.roll)
-                session.login = 2
-                session.student_email = session.token
-		query = db(db.Applicant.aprollno == session.roll).select().first()
-		if query :
-		    if not db(db.SelectedTA.appid == query.id).select():
-			query.apemail_id = session.student_email
-			query.update_record()
-		        #query = db(db.Applicant.aprollno == session.roll).update(apemail_id = session.student_email)
-		    else:
-			session.student_email = query.apemail_id
-        elif(session.token and session.token.split('@')[1] == 'iiit.ac.in' ):
-	    session.mark = {}
-            emailValue = db(db.Admin.ademail_id == session.token).select(db.Admin.ademail_id)   
-            if( emailValue ):
-                db.auth_event.insert(origin=session.token,user_type="admin",description="logged in",name=session.name,uid=session.roll)
-                redirect(URL(r=request,f='sp_check'))
-            else :
-                db.auth_event.insert(origin=session.token,user_type="faculty",description="logged in",name=session.name,uid=session.roll)
-                session.faculty_login_emailid = session.token
-                session.login = 3
-                session.token = session.token
-    else:
-        session.token = session.token
-    return dict(mesg=session.token)
+    # Retrieve User information from ldap
+    retrieveUserInfo()
+    # Save name and roll number of user
+    session.name = name
+    session.roll = roll
+
+    if session.role == user_roles["none"]:
+        session.mark = {}
+        emailValue = db(db.Admin.ademail_id == session.username).select(db.Admin.ademail_id)
+        if emailValue:
+            # Admin
+            db.auth_event.insert(origin=session.username,user_type="admin",description="logged in",name=session.name,uid=session.roll)
+            redirect(URL(r=request,f='sp_check'))
+        
+        if session.username:
+            email_domain = session.username.split('@')[1]
+            if email_domain == "students.iiit.ac.in" or email_domain == "research.iiit.ac.in":
+                # Student
+                db.auth_event.insert(origin=session.username,user_type="student",description="logged in",name=session.name,uid=session.roll)
+                session.role = user_roles["student"]
+                session.student_email = session.username
+                query = db(db.Applicant.aprollno == session.roll).select().first()
+                if query:
+                    if not db(db.SelectedTA.appid == query.id).select():
+                        query.apemail_id = session.student_email
+                        query.update_record()
+                        #query = db(db.Applicant.aprollno == session.roll).update(apemail_id = session.student_email)
+                    else:
+                        session.student_email = query.apemail_id
+            elif email_domain == 'iiit.ac.in':
+                # Faculty
+                db.auth_event.insert(origin=session.username,user_type="faculty",description="logged in",name=session.name,uid=session.roll)
+                session.faculty_login_emailid = session.username
+                session.role = user_roles["faculty"]
+                session.username = session.username
+
+    return dict(message=session.username)
 #-------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------
 def sp_check():
-    return dict(mesg="taship")
+    return dict(message="taship")
 #-------------------------------------------------------------------------------
 
-#----------------- General Function for all ------------------------------------     
+#----------------- General Function for all ------------------------------------
 def courses_info():
     r=db((db.Course.id==db.Teach.course_id) & (db.Teach.faculty_id == db.Faculty.id))\
         .select(db.Course.cname,db.Course.cid,db.Course.cdts,db.Course.hours_per_week,db.Faculty.fname,orderby=db.Course.cname.upper())
@@ -174,7 +156,7 @@ def courses_info():
 
 #-------------------------------------------------------------------------------
 
-#-------------------------------------------------------------------------------
+#----------------- General Function for all ------------------------------------
 def contacts():
     r=db(db.Admin.id>0).select()
     return dict(r=r)
@@ -227,21 +209,21 @@ class NewMail(object):
         self.settings.sender = ''
         self.settings.login = ""
         self.settings.lock_keys = True
-    def send(self,to,subject,mesg):
-            try:
-                (host, port) = self.settings.server.split(':')
-                server = smtplib.SMTP(host, port)
-                if self.settings.login:
-                    server.ehlo()
-                    server.ehlo()
-                    (username, password) = self.settings.login.split(':')
-                mesg = "From: %s\n"%(self.settings.sender)+"To: %s\n" %(to)+"Subject: %s\n" % (subject)+"\r\n"+(mesg)+"\r\n"
-                server.sendmail(self.settings.sender, to, mesg)
-                server.quit()
-            except Exception, e:
-                print e
-                return False
-            return True
+    def send(self,to,subject,message):
+        try:
+            (host, port) = self.settings.server.split(':')
+            server = smtplib.SMTP(host, port)
+            if self.settings.login:
+                server.ehlo()
+                server.ehlo()
+                (username, password) = self.settings.login.split(':')
+            message = "From: %s\n"%(self.settings.sender)+"To: %s\n" %(to)+"Subject: %s\n" % (subject)+"\r\n"+(message)+"\r\n"
+            server.sendmail(self.settings.sender, to, message)
+            server.quit()
+        except Exception, e:
+            print e
+            return False
+        return True
 #-------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------
@@ -260,169 +242,323 @@ def sendmail(sender,reciever,subj,title):
 #       return mail.settings.keys()
 #send the message
     print "Mail to be sent"
-    return mail.send(to=reciever, subject=title, mesg=subj)
+    return mail.send(to=reciever, subject=title, message=subj)
 # ----->>>  mail server is kept "mail.iiit.ac.in" <<<<--------------------------
 #-------------------------------------------------------------------------------
 
-
-#------------- ADMIN LOGIN FUNCITON --------------------------------------------
-# FUNCTION GENERATE FOLLOWING SESSION VARIABLES
-# session.login = 1
-# session.admin_email = email of admin logged in
-
-def admin_login():
-    form = form_factory(
-            SQLField('Username', 'string', requires = IS_NOT_EMPTY()),
-            SQLField('Password', 'password', requires = IS_NOT_EMPTY()))
-
-    if form.accepts(request.vars, session):
-        username = request.vars.Username
-        password = request.vars.Password
-    #if valid username then check password with the server
-        emailValue = db(db.Admin.adname == username).select(db.Admin.ademail_id)    
-        if(emailValue):
-            for row in emailValue:
-                email = row.ademail_id
-                value = match_password(email, password, 'mail.iiit.ac.in')
-                if(value == '1'):                           # login successful
-                    session.login = 1
-                    session.admin_email = email
-                    session.flash = 'Login Successful'
-                else:                               # login failure
-                    response.flash = 'Incorrect Username or Password'+str(value)
-        else:
-            response.flash = 'Incorrect Username or Password'  # incorrect username
-    return dict(form=form)
-#-------------------------------------------------------------------------------
-
-#------------------ STUDENT LOGIN FUNCTION -------------------------------------
-# FUNCTION GENERATES FOLLOWING SESSION VARIABLES 
-# session.login=2
-# session.student_email=email
-
-def student_login():    
-   # form is created in views/student_login.html 
-    if(request.vars.submit):
-        email = request.vars.username + '@' + request.vars.email
-        passwd = request.vars.password
-        value = match_password(email, passwd, request.vars.email)
-        if(value == '1'):
-            session.login = 2
-            session.student_email = email
-            session.flash = 'Login Successful'
-        else: 
-            response.flash = 'Incorrect Username or Password'
-    return dict()
-#-------------------------------------------------------------------------------
-
-#------------------------------- FACULTY LOGIN ---------------------------------
-# FUNCTION GENERATES FOLLOWING SESSION VARIABLES
-# session.login=3
-# session.faculty_login_email = email_of_faculty_loggedin
-
-def faculty_login():
-    form = form_factory(
-            SQLField('Username', 'string', label = 'Username  ', requires = IS_NOT_EMPTY()),
-            SQLField('Password', 'password', label = 'Password  ', requires = IS_NOT_EMPTY()))
-
-    if form.accepts(request.vars, session):
-        username = request.vars.Username
-        password = request.vars.Password
-        value = match_password(username, password, 'iiit.ac.in')
-        if(value == '1'):
-            session.login = 3
-            session.faculty_login_emailid = username
-            session.flash = 'Login Succesful'
-        else:
-            response.flash = 'Incorrect Username or Password'
-    return dict(form=form)
-#-------------------------------------------------------------------------------
-#-------------------------------------------------------------------------------
-def logout1():
-    # updating all the session variables used to default => no user is logged in
-    session.login = 0
-    session.student_email = 0
-    session.admin_email = 0
-    session.faculty_login_emailid = 0
-#   session.flash = "Successfully Logged out"
-    redirect(URL(r = request, f = 'logout'))
-    return dict()
-
 # -------------- Applicant related queries  starts here ------------------------
-import datetime
 
-#---------------modified by Team 45---------------------------------------------
-def TA_application():
-   # checking whether applicant is logged in or not
-    if session.login != 2 :     
-       redirect(URL(r = request , f = 'index'))
-       return dict()
+# --------------- Refactored ---------------------------------------------------
+def getUpdateProfileForm():
+    """
+        Returns the Student Update Profile form
+    """
+    form = form_factory(
+            SQLField('name', 'string', label = 'Name', requires = IS_NOT_EMPTY()),
+            SQLField('rollno', 'integer', label = 'Roll No',requires = IS_NOT_EMPTY()),
+            SQLField('program', label = 'Program Of Study', requires = IS_IN_DB(db,'Program.id','%(pname)s')),
+            SQLField('cgpa', 'double', label='CGPA',requires = IS_FLOAT_IN_RANGE(0,10)),
+            SQLField('phone', 'string', label = 'Phone No'),
+            SQLField('prevexp',label = 'Previous Experience',requires=IS_IN_SET(['Yes','No'])),
+            )
 
-    session.check = 0
-    check_point = 0
-    msg = ''                            #  msg is for returning to the html file        
-    record = []                         #  record stores the info of the applicant if he has already applied 
-    session.alreadyThereFlag = 0                    #  used in the corresponding html file to see if an applicant has already applied or not
+    return form
+
+# --------------- Refactored ---------------------------------------------------
+def getAddPreferenceForm():
+    """
+        Returns the form for adding a preference
+    """
+    appid = db(db.Applicant.apemail_id == session.student_email).select(db.Applicant.id)[0]
+    # Number of courses for which applicant has applied
+    num_applied_courses = db(db.AppliedFor.appid == appid).count()
+    pref_rem = [num_applied_courses + 1]
+    form = form_factory(                        # creating a form for the applicant to select course
+            SQLField('course', label = 'Course', requires = (IS_IN_DB(db, 'Course.id', '%(cname)s ( %(cid)s )'))),
+            SQLField('grade', label = 'Grade In The Course', requires = IS_IN_SET(['A','A-','B','B-','C','NA'])),
+            SQLField('preference', label = 'Preference', requires = IS_IN_SET(pref_rem)),_method='GET')
+    return form
+
+# --------------- Refactored ---------------------------------------------------
+def getUpdatePhoneForm():
+    """
+    """
+    form = form_factory(
+        SQLField('phone', 'string', label = 'Phone No'),
+        SQLField('prevexp',label = 'Previous Experience',requires=IS_IN_SET(['Yes','No'])),
+        SQLField('program', label = 'Program Of Study', requires = IS_IN_DB(db,'Program.id','%(pname)s')))
+    return form
+
+# --------------- Refactored ---------------------------------------------------
+def checkPortalActivity():
+    """
+        Checks if the portal is active for the student.
+        Displays an appropriate message if inactive
+        Returns true if active
+    """
     now = datetime.datetime.now()
-    portal_date=db(db.Portaldate.id>0).select()    
-    now = datetime.datetime.now()
-    records_appliedfor = db((db.AppliedFor.appid == db.Applicant.id) & (db.AppliedFor.cid == db.Course.id) &\
-          (db.Applicant.apemail_id == session.student_email)).select(orderby=db.AppliedFor.preference)
-
-    if portal_date:                     #------check if there is a record in portal_date
-        start=portal_date[0].start_date  
+    portal_date=db(db.Portaldate.id>0).select()
+    if portal_date:
+        start=portal_date[0].start_date
         end=portal_date[0].end_date
-        if now < start :
+        if now < start:
+            # Application not yet open
             session.flash = 'Wait till %s'%start.strftime('%d %B %Y %I:%M%p')
             redirect(URL(r=request,f='home_page'))
-        elif now > end: 
+        elif now > end:
+            # Application deadline over
             session.flash = 'Deadline over at %s'%end.strftime('%d %B %Y %I:%M%p')
             redirect(URL(r=request,f='home_page'))
-        elif now > start and now <  end :
-            if db(db.Applicant.apemail_id == session.student_email).select():   # if an applicant is already applied 
-                session.alreadyThereFlag = 1                        
-                applicantInfo = db((db.Applicant.apemail_id == session.student_email) & (db.Applicant.program_id == db.Program.id)).select()
-                appid = db(db.Applicant.apemail_id == session.student_email).select(db.Applicant.id)[0]
-		if (db(db.Applicant.apemail_id == session.student_email).select(db.Applicant.phoneno)[0].phoneno) == None:
-			form = form_factory(
-					SQLField('phone', 'string', label = 'Phone No'),
-					SQLField('prevexp',label = 'Previous Experience',requires=IS_IN_SET(['Yes','No'])),
-					SQLField('program', label = 'Program Of Study', requires = IS_IN_DB(db,'Program.id','%(pname)s')))
-			if form.accepts(request.vars,session):
-				db(db.Applicant.apemail_id==session.student_email).update(phoneno=request.vars.phone,program_id=request.vars.program,prev_exp=request.vars.prevexp)
-				redirect(URL(r=request,f='TA_application'))
-			return dict(form=form)
-	    	else :
-			session.check = 1
-                	course =db(db.AppliedFor.appid == appid).select()   #---- courses for which applicant has applied
-			pref_sel =[]    #---- preferences corresponding applied courses 
-                    	for rows in course:
-                            if rows.preference:
-                                pref_sel.append(int(rows.preference))
-                        pref_rem=[]
-                        check1 = 0
-                        lenght = len(pref_sel)
-                        if lenght >= 1:
-                            check1 = max(pref_sel)
-                        pref_rem = [check1 + 1]
-                        #pref_rem=[i for i in range(1,11) if i not in pref_sel] 
-		        form = form_factory(                        # creating a form for the applicant to select course
-                            SQLField('course', label = 'Course', requires = (IS_IN_DB(db, 'Course.id', '%(cname)s ( %(cid)s )'))),
-                            SQLField('grade', label = 'Grade In The Course', requires = IS_IN_SET(['A','A-','B','B-','C','NA'])),
-                            SQLField('preference', label = 'Preference', requires = IS_IN_SET(pref_rem)),_method='GET')
+    else :
+        session.flash = 'Portal not yet Started  !!'
+        redirect(URL(r=request,f='home_page'))
+    return True
+
+# --------------- Refactored ---------------------------------------------------
+def getStudentInfo():
+    """
+        Queries and returns the students info from db
+    """
+    return db((db.Applicant.apemail_id == session.student_email) &
+            (db.Applicant.program_id == db.Program.id)).select()
+
+# --------------- Refactored ---------------------------------------------------
+def checkIsStudent():
+    """
+        Redirects to index if the current user is not student
+    """
+    if session.role != user_roles["student"]:
+        redirect(URL(r = request , f = 'index'))
+
+#---------------modified by Team 45---------------------------------------------
+def Fill_missing_student_info():
+    '''
+        Generates form for filling the remaining student info for records taken from dump file.
+    '''
+    form = form_factory(
+        SQLField(
+            'phone', 'string', label='Phone No'), SQLField(
+            'prevexp', label='Previous Experience', requires=IS_IN_SET(
+                [
+                    'Yes', 'No'])), SQLField(
+                        'program', label='Program Of Study', requires=IS_IN_DB(
+                            db, 'Program.id', '%(pname)s')))
+    if form.accepts(request.vars, session):
+        db(
+            db.Applicant.apemail_id == session.student_email).update(
+            phoneno=request.vars.phone,
+            program_id=request.vars.program,
+            prev_exp=request.vars.prevexp)
+        redirect(URL(r=request, f='TA_application'))
+    return dict(form=form)
+
+
+def generate_course_preference_form(appid):
+    '''
+        Generates course preference form by fetching last max preference
+    '''
+    course = db(db.AppliedFor.appid == appid).select(
+    )  # ---- courses for which applicant has applied
+    pref_sel = []  # ---- preferences corresponding applied courses
+    for rows in course:
+        if rows.preference:
+            pref_sel.append(int(rows.preference))
+    pref_rem = []
+    check1 = 0
+    lenght = len(pref_sel)
+    if lenght >= 1:
+        check1 = max(pref_sel)
+    pref_rem = [check1 + 1]
+    form = form_factory(                        # creating a form for the applicant to select course
+        SQLField(
+            'course',
+            label='Course',
+            requires=(
+                IS_IN_DB(
+                    db,
+                    'Course.id',
+                    '%(cname)s ( %(cid)s )'))),
+        SQLField('grade', label='Grade In The Course',
+                 requires=IS_IN_SET(['A', 'A-', 'B', 'B-', 'C', 'NA'])),
+        SQLField('preference', label='Preference', requires=IS_IN_SET(pref_rem)), _method='GET')
+    return form
+
+
+def confirm_and_log_course_app(appid, course, grade, preference):
+    ''' Functionalities:
+        1.Inserts the applied course preference in database
+        2.Makes a log for the record
+    '''
+    db.AppliedFor.insert(
+        appid=appid,
+        cid=course,
+        noflag=0,
+        timestamp=datetime.date.today(),
+        grade=grade,
+        preference=preference)
+    c = db(db.Course.id == course).select()[0]
+    db.auth_event.insert(
+        origin=session.student_email,
+        user_type="student",
+        description="applied for" +
+        c.cname,
+        name=session.name,
+        uid=session.roll)
+    Course = db(db.Course.id == course).select(db.Course.cname)
+    for i in Course:
+        course = i.cname
+    x = ""
+    t = datetime.datetime.now()
+    if t.month < 7:
+        x = str(t.year) + " " + "Spring"
+    else:
+        x = str(t.year) + " " + "Monsoon"
+    query = db(
+        (db.logs.cname == course) & (
+            db.logs.time == x)).select(
+        db.logs.id)
+    flag_c = 0
+    entry = 0
+    for i in query:
+        entry = i.id
+    qu = db(db.Applicant.id == appid).select(db.Applicant.aprollno)
+    roll = 0
+    for i in qu:
+        roll = i.aprollno
+    if entry > 0:
+        flag_c = 1
+    t = datetime.datetime.now()
+    if flag_c == 1:
+        q = db(db.logs.cname == course).select(db.logs.No_of_TAs_applied)
+        p = q[0].No_of_TAs_applied
+        p += 1
+        db(db.logs.id == entry).update(No_of_TAs_applied=p)
+        db.logs_applicant.insert(
+            logid=entry,
+            applicant_id=roll,
+            applicant_name=session.name,
+            applicantid=session.student_email,
+            Status='None')
+    else:
+        q = db(db.Course.cname == course).select(db.Course.cid)
+        for i in q:
+            cd = i.cid
+            db.logs.insert(time=x, cname=course, cid=cd, No_of_TAs_applied=1)
+            query = db(db.logs.cname == course).select(db.logs.id)
+        for i in query:
+            entry = i.id
+        db.logs_applicant.insert(
+            logid=entry,
+            applicant_id=roll,
+            applicant_name=session.name,
+            applicantid=session.student_email)
+    session.flash = '!! Thank You for Application !!'
+    redirect(URL(r=request, f='TA_application'))
+
+
+def Register_student_applicant():
+    '''
+        Registers a new applicant
+    '''
+    if db(db.Applicant.apemail_id == session.student_email).select():
+        redirect(URL(r=request, f='TA_application'))
+    form = form_factory(
+        SQLField(
+            'name', 'string', label='Name', requires=IS_NOT_EMPTY()), SQLField(
+            'rollno', 'integer', label='Roll No', requires=IS_NOT_EMPTY()), SQLField(
+                'program', label='Program Of Study', requires=IS_IN_DB(
+                    db, 'Program.id', '%(pname)s')), SQLField(
+                        'cgpa', 'double', label='CGPA', requires=IS_FLOAT_IN_RANGE(
+                            0, 10)), SQLField(
+                                'phone', 'string', label='Phone No'), SQLField(
+                                    'prevexp', label='Previous Experience', requires=IS_IN_SET(
+                                        [
+                                            'Yes', 'No'])), )
+    session.check = 0
+    # ----------------- if the form is submitted ----------------------------
+    if form.accepts(request.vars, session):
+        name = request.vars.name
+        rollno = request.vars.rollno
+        program = request.vars.program
+        cgpa = request.vars.CGPA
+        phone = request.vars.phone
+        exp = request.vars.prevexp
+        # ----------- insert the applicant ----------
+        appid = db.Applicant.insert(
+            apname=name,
+            aprollno=rollno,
+            apemail_id=session.student_email,
+            apcgpa=cgpa,
+            phoneno=phone,
+            prev_exp=exp,
+            program_id=program)
+        db.auth_event.insert(
+            origin=session.student_email,
+            user_type="student",
+            description="profile updated",
+            name=session.name,
+            uid=session.roll)
+        mesg = "!! Profile Created !! "
+        redirect(URL(r=request, f='TA_application'))
+    return dict(form=form)
+
+
+#---------------modified by Team 45---------------------------------------
+def TA_application():
+   # checking whether applicant is logged in or not
+    print "before"
+    print str(session.login)
+    if session.role != user_roles["student"]:
+        redirect(URL(r=request, f='index'))
+        return dict()
+    print "inside"
+    session.check = 0
+    check_point = 0
+    msg = '' 
+    record = []
+    session.already_applied = 0
+    now = datetime.datetime.now()
+    portal_date = db(db.Portaldate.id > 0).select()
+    now = datetime.datetime.now()
+    records_appliedfor = db(
+        (db.AppliedFor.appid == db.Applicant.id) & (
+            db.AppliedFor.cid == db.Course.id) & (
+            db.Applicant.apemail_id == session.student_email)).select(
+                orderby=db.AppliedFor.preference)
+
+    if portal_date:  # ------check if there is a record in portal_date
+        start = portal_date[0].start_date
+        end = portal_date[0].end_date
+        if now < start:
+            session.flash = 'Wait till %s' % start.strftime('%d %B %Y %I:%M%p')
+            redirect(URL(r=request, f='home_page'))
+        elif now > end:
+            session.flash = 'Deadline over at %s' % end.strftime(
+                '%d %B %Y %I:%M%p')
+            redirect(URL(r=request, f='home_page'))
+        elif now > start and now < end:
+            # if an applicant is already applied
+            if db(db.Applicant.apemail_id == session.student_email).select():
+                session.already_applied = 1
+                applicantInfo = db(
+                    (db.Applicant.apemail_id == session.student_email) & (
+                        db.Applicant.program_id == db.Program.id)).select()
+                appid = db(
+                    db.Applicant.apemail_id == session.student_email).select(
+                    db.Applicant.id)[0]
+                if (db(db.Applicant.apemail_id == session.student_email).select(
+                        db.Applicant.phoneno)[0].phoneno) == None:
+                    redirect(URL(r=request, f='Fill_missing_student_info'))
+                else:
+                    session.check = 1
+                    form = generate_course_preference_form(appid)
+
             else:
-                                            # ------------ else if the applicant has applied for the first time --------------- 
-                form = form_factory(
-		        SQLField('name', 'string', label = 'Name', requires = IS_NOT_EMPTY()),
-                        SQLField('rollno', 'integer', label = 'Roll No',requires = IS_NOT_EMPTY()),
-                        SQLField('program', label = 'Program Of Study', requires = IS_IN_DB(db,'Program.id','%(pname)s')),
-                        SQLField('cgpa', 'double', label='CGPA',requires = IS_FLOAT_IN_RANGE(0,10)),
-                        SQLField('phone', 'string', label = 'Phone No'),
-			SQLField('prevexp',label = 'Previous Experience',requires=IS_IN_SET(['Yes','No'])),
-#                        SQLField('phone', 'bigint', label = 'Phone No'),
-                        )
-		session.check=0
-            if form.accepts(request.vars, session):   # ----------------- if the form is submitted ----------------------------
+                                            # ------------ else if the applican
+                redirect(URL(r=request, f='Register_student_applicant'))
+
+            # ----------------- if the form is submitted ----------------------
+            if form.accepts(request.vars, session):
                 name = request.vars.name
                 rollno = request.vars.rollno
                 program = request.vars.program
@@ -431,129 +567,111 @@ def TA_application():
                 cgpa = request.vars.CGPA
                 phone = request.vars.phone
                 exp = request.vars.prevexp
-                preference=request.vars.preference
-                if(session.alreadyThereFlag == 1):          
-                    r = db(db.Applicant.apemail_id == session.student_email).select()
+                preference = request.vars.preference
+                if(session.already_applied == 1):
+                    r = db(
+                        db.Applicant.apemail_id == session.student_email).select()
                     for rows in applicantInfo:
                         appid = rows.Applicant.id
-		else:               # ----------- else insert and get the .id of the applicant ----------   
-                    appid = db.Applicant.insert(apname = name, aprollno = rollno , apemail_id = session.student_email,apcgpa = cgpa, phoneno = phone, prev_exp = exp, program_id = program)
-                    db.auth_event.insert(origin=session.student_email,user_type="student",description="profile updated",name=session.name,uid=session.roll)
-                    mesg = "!! Profile Created !! "                
-                
-                if(session.alreadyThereFlag == 1):
-                    s = db((db.AppliedFor.appid == appid) & (db.AppliedFor.cid == course)).select().first() 
+
+                if(session.already_applied == 1):
+                    s = db(
+                        (db.AppliedFor.appid == appid) & (
+                            db.AppliedFor.cid == course)).select().first()
                     if(s):
                         a = 1
                         session.flash = '!! You applied for course !!'
-                        redirect(URL(r = request, f = 'TA_application'))
-                    else:               # else fill info in the database
-                        db.AppliedFor.insert(appid = appid , cid = course, noflag = 0, timestamp = datetime.date.today(), grade = grade,preference=preference) 
-                        c=db(db.Course.id==course).select()[0]
-                        db.auth_event.insert(origin=session.student_email,user_type="student",description="applied for "+c.cname,name=session.name,uid=session.roll)
-			Course=db(db.Course.id==course).select(db.Course.cname)
-			for i in Course :
-				course=i.cname
-		        x=""
-		        t = datetime.datetime.now()
-		        if t.month < 7 :
-		                x=str(t.year)+" "+"Spring"
-		        else :
-		                x=str(t.year)+" "+"Monsoon"
-			query=db((db.logs.cname==course) & (db.logs.time==x)).select(db.logs.id)
-			flag_c=0
-			entry=0
-			for i in query:
-			 	entry=i.id
-			qu=db(db.Applicant.id==appid).select(db.Applicant.aprollno)
-			roll=0
-			for i in qu:
-				roll=i.aprollno
-			if entry >0 :
-				flag_c=1
-    			t = datetime.datetime.now()
-#			x=""
-			if flag_c==1 :
-				q=db(db.logs.cname==course).select(db.logs.No_of_TAs_applied)
-				p=q[0].No_of_TAs_applied
-				p+=1
-				db(db.logs.id==entry).update(No_of_TAs_applied=p)
-				db.logs_applicant.insert(logid=entry,applicant_id=roll,applicant_name=session.name,applicantid=session.student_email,Status='None')
-			else :
-			
-				q=db(db.Course.cname==course).select(db.Course.cid)
-				for i in q:
-					cd=i.cid
-				db.logs.insert(time=x,cname=course,cid=cd,No_of_TAs_applied=1)                    
-				query=db(db.logs.cname==course).select(db.logs.id)
-				for i in query:
-			 		entry=i.id
-				db.logs_applicant.insert(logid=entry,applicant_id=roll,applicant_name=session.name,applicantid=session.student_email)
-                        session.flash = '!! Thank You for Application !!'
-                        redirect(URL(r = request, f = 'TA_application'))
-                else :
+                        redirect(URL(r=request, f='TA_application'))
+                    else:                # else fill info in the database
+                        confirm_and_log_course_app(
+                            appid,
+                            course,
+                            grade,
+                            preference)
+
+                else:
                     session.flash = mesg
-                    redirect(URL(r = request, f = 'TA_application'))
-    else :
+                    redirect(URL(r=request, f='TA_application'))
+    else:
         session.flash = 'Portal not yet Started  !!'
-        redirect(URL(r=request,f='home_page'))
-    return dict(records_appliedfor=records_appliedfor,form = form)
-#------------------------------------------------------------------------------- 
+        redirect(URL(r=request, f='home_page'))
+    return dict(records_appliedfor=records_appliedfor, form=form)
+#-------------------------------------------------------------------------
 
 def edit_profile():
-    if ( session.login != 2 ):
+    """
+        Displays a form to let a student edit his profile.
+    """
+    if (session.role != 2):
         redirect(URL(r=request, f='index'))
         return dict()
-    records = db((db.Applicant.apemail_id == session.student_email) & (db.Applicant.program_id == db.Program.id)).select()
-    if len(records)==0:
-	redirect(URL(r=request, f='index'))
-    records=records.first()
+    student_details = db(
+        (db.Applicant.apemail_id == session.student_email) & (
+            db.Applicant.program_id == db.Program.id)).select()
+    if len(student_details) == 0:  # if student details are not available
+        redirect(URL(r=request, f='index'))
+    student_details = student_details.first()
+
     form = form_factory(
-        SQLField('name', 'string', label = 'Name', requires = IS_NOT_EMPTY(),default=records['Applicant'].apname),
-        SQLField('rollno', 'integer', label = 'Roll No',requires = IS_NOT_EMPTY(),default=records['Applicant'].aprollno),
-        SQLField('program', label = 'Program Of Study', requires = IS_IN_DB(db,'Program.id','%(pname)s'),default=records['Applicant'].program_id),
-        SQLField('cgpa', 'double', default=records['Applicant'].apcgpa,label='CGPA',requires = IS_FLOAT_IN_RANGE(0,10),writable=False),
-        SQLField('phone', 'string', label = 'Phone No',default=records['Applicant'].phoneno),
-        SQLField('prevexp',label = 'Previous Experience',requires=IS_IN_SET(['Yes','No']),default=records['Applicant'].prev_exp))
-    if form.accepts(request.vars,session):
-        #print records.Applicant
-	records['Applicant'].apname=request.vars.name
-	records['Applicant'].aprollno=request.vars.rollno
-	records['Applicant'].program_id=request.vars.program
-	records['Applicant'].phoneno=request.vars.phone
-	records['Applicant'].prev_exp=request.vars.prevexp
-	records['Applicant'].update_record()
+        SQLField(
+            'NAME',
+            'string',
+            label='Name',
+            requires=IS_NOT_EMPTY(),
+            default=student_details['Applicant'].apname),
+        SQLField(
+            'rollno',
+            'integer',
+            label='Roll No',
+            requires=IS_NOT_EMPTY(),
+            default=student_details['Applicant'].aprollno),
+        SQLField(
+            'program',
+            label='Program Of Study',
+            requires=IS_IN_DB(
+                db,
+                'Program.id',
+                '%(pname)s'),
+            default=student_details['Applicant'].program_id),
+        SQLField(
+            'cgpa',
+            'double',
+            default=student_details['Applicant'].apcgpa,
+            label='CGPA',
+            requires=IS_FLOAT_IN_RANGE(
+                0,
+                10)),
+        SQLField(
+            'phone',
+            'string',
+            label='Phone No',
+            default=student_details['Applicant'].phoneno),
+        SQLField(
+            'prevexp',
+            label='Previous Experience',
+            requires=IS_IN_SET(
+                [
+                    'Yes',
+                    'No']),
+            default=student_details['Applicant'].prev_exp))
+
+    if form.accepts(request.vars, session):
+        student_details['Applicant'].apname = request.vars.name
+        student_details['Applicant'].aprollno = request.vars.rollno
+        student_details['Applicant'].program_id = request.vars.program
+        student_details['Applicant'].phoneno = request.vars.phone
+        student_details['Applicant'].prev_exp = request.vars.prevexp
+        student_details['Applicant'].cgpa = request.vars.cgpa
+        student_details['Applicant'].update_record()
         response.flash = '!! profile updated !!'
-        redirect(URL(r = request, f = 'student_profile'))
-    return dict(form = form)
-#-------------------------------------------------------------------------------
-def student_profile():
-    if ( session.login != 2 ):
-        redirect(URL(r=request, f='index'))
-        return dict()
-    records = db((db.Applicant.apemail_id == session.student_email) & (db.Applicant.program_id == db.Program.id)).select()
-    return dict(records=records)
-
-
-
-def student_details():
-    x=request.args(0)
-    flag=0
-    if ( session.login == 2 ):
-        redirect(URL(r=request, f='index'))
-        return dict()
-    records = db((db.Applicant.aprollno==x) & (db.Applicant.program_id==db.Program.id)).select()
-    query = db(db.Feedback.s_id==x).select()
-    if(query!=None):
-	    flag=1
-
-    return dict(records=records,query=query,flag=flag)
+        redirect(URL(r=request, f='student_profile'))
+    return dict(form=form)
 #-------------------------------------------------------------------------------
 
 def unselect_course():
-    if session.login != 2:                      
-        redirect(URL(r = request, f = 'index'))
-        return dict()
+    # checking whether user is student or not
+    checkIsStudent()
+
     appid=db(db.Applicant.apemail_id == session.student_email).select(db.Applicant.id)[0]     #----stores the applicant id of current user
     appcor=db((db.AppliedFor.appid == appid)&(db.AppliedFor.cid==db.Course.id)).select()     #-----stores all courses for which user has applied
     form = form_factory(                        # -------- creating form for unselecting  course --------------         
@@ -561,225 +679,330 @@ def unselect_course():
     return dict(form=form,appid=appid,appcor=appcor)
 #-------------------------------------------------------------------------------
 
-def status():
-    #if ( session.login != 2 ):
-#redirect(URL(r=request, f='index'))
-#        return dict()
-    var_new=0;
-    print request.args(0);
-    print "varun";
-    print var_new;
-    appid=db(db.Applicant.apemail_id == session.student_email).select(db.Applicant.id)[0]#----stores the applicant id of current user
-#  name=db(db.Applicant.apemail_id == session.student_email).select(db.Applicant.apname)#----stores the applicant id of current user
-#   for i in name:
-#	aname=i.apname
-#   print aname
-    records_appliedfor = db((db.AppliedFor.appid == db.Applicant.id) & (db.AppliedFor.cid == db.Course.id) &\
-          (db.Applicant.apemail_id == session.student_email)).select(orderby=db.AppliedFor.preference)
-    record_appliedfor = db((db.AppliedFor.appid == db.Applicant.id) & (db.AppliedFor.cid == db.Course.id) &\
-          (db.Applicant.apemail_id == session.student_email)).select(db.AppliedFor.status)
-    flag=0
-	#state=4
-#    print state
-#  print 'working'
-    for i in record_appliedfor:
-	if i.status=='Selected':
-		flag=1
-#   print flag
-    records= db((db.AppliedFor.appid == appid) & (db.AppliedFor.cid == db.Course.id) ).select(orderby=db.AppliedFor.preference)
-    portal_date=db(db.Portaldate.id>0).select()
-    now = datetime.datetime.now()
-    if portal_date:
-        start=portal_date[0].start_date
-        end=portal_date[0].end_date
-        if now < start :
-#print 'now < start'
-            state=0
-#	    print state
-            session.flash = 'Wait till %s'%start.strftime('%d %B %Y %I:%M%p')
-            redirect(URL(r=request,f='index'))
-        elif now > start and now <  end :
-#	    print ' now > start and now < end'
-            state=1
-#	    print state
-            if request.vars.index:
-                index=int(request.vars.index)
-            apfid=request.vars.apfid    
-            if request.vars.submit=='up' :
-                pref_curr= int(records[index].AppliedFor.preference)
-                if index<len(records) and index>0:                                        
-                    pref_prev=int(records[index-1].AppliedFor.preference)
-                    if  pref_curr == pref_prev + 1 :
-                        db(db.AppliedFor.id==records[index].AppliedFor.id).update(preference=pref_prev)
-                        db(db.AppliedFor.id==records[index-1].AppliedFor.id).update(preference=pref_curr)
-                    elif pref_curr > pref_prev + 1 :
-                        db(db.AppliedFor.id==records[index].AppliedFor.id).update(preference=pref_curr-1)
-                    redirect(URL(r=request,f='status'))
-                                       
-                elif index == 0:
-                    if pref_curr != 1:
-                        db(db.AppliedFor.id==records[index].AppliedFor.id).update(preference=pref_curr-1)
-                    redirect(URL(r=request,f='status'))
-                   
-            elif request.vars.submit=='down':
-                if index < len(records)-1 and index >= 0:
-                    pref_curr = int(records[index].AppliedFor.preference)
-                    pref_next = int(records[index+1].AppliedFor.preference)
-                    if  pref_curr == pref_next - 1 :
-                        db(db.AppliedFor.id == records[index].AppliedFor.id).update(preference=pref_next)
-                        db(db.AppliedFor.id == records[index+1].AppliedFor.id).update(preference=pref_curr)
-                    elif pref_curr < pref_next - 1:
-                        db(db.AppliedFor.id == records[index].AppliedFor.id).update(preference=pref_curr+1)
-                    redirect(URL(r=request,f='status'))
-        else:
-            state=0
-        if flag==1:
-            state=2
-#	    print 'coming here'
-           
-    	    print request.vars.submit;
-            print request.vars.cid;
-           
-                   
-            if request.vars.submit=='accept':
-                var_new=0;
-                Id2 = db(db.SelectedTA.appid == appid).select()[0]
-                if Id2:                 #----check if applicant is selected by Admin
-                    db(db.SelectedTA.appid == appid).update(flag=1)
-                    course=db(db.Course.id==request.vars.cid).select()[0]
-		    c=db(db.logs.cname==course.cname).select(db.logs.id)[0]
-#		    print c.id
-#		    print 'arbit kuch bhi'
-#		    print course.cname
-#		    print session.student_email
-		    Courses=db(db.Course.id==course.id).select(db.Course.cname)
-		    for i in Courses :
-		    	courses=i.cname
-		    x=""
-    		    t = datetime.datetime.now()
-		    if t.month < 7 :
-			x=str(t.year)+" "+"Spring"
-		    else :
-			x=str(t.year)+" "+"Monsoon"
-		    query=db((db.ta_records.cname==courses) & (db.ta_records.time==x)).select(db.ta_records.id)
-		    flag_c=0
-		    entry=0
-		    for i in query:
-		    	entry=i.id
-#		    print entry
-#		    print courses
-		    qu=db(db.Applicant.id==appid).select(db.Applicant.aprollno)
-		    roll=0
-		    for i in qu:
-		    	roll=i.aprollno
-		    if entry >0 :
-		    	flag_c=1
+def get_portal_state():
+    """ Returns the state of the portal:
 
-		    if flag_c==1 :
-		    	q=db(db.ta_records.cname==courses).select(db.ta_records.No_of_TAs)
-		    	p=q[0].No_of_TAs
-		    	p+=1
-			db(db.ta_records.id==entry).update(No_of_TAs=p)
-			db.ta_applicant.insert(ta_id=entry,applicant_id=roll,applicant_name=session.name,applicantid=session.student_email)
-		    else :
-			
-			q=db(db.Course.cname==courses).select(db.Course.cid)
-			for i in q:
-				cd=i.cid
-			db.ta_records.insert(time=x,cname=courses,cid=cd,No_of_TAs=1)                    
-			query=db(db.ta_records.cname==courses).select(db.ta_records.id)
-			for i in query:
-		 		entry=i.id
-			db.ta_applicant.insert(ta_id=entry,applicant_id=roll,applicant_name=session.name,applicantid=session.student_email)
-		    
-# db(db.Applicant.apemail_id==session.student_email).update(prev_exp='Yes')
-		    db((db.logs_applicant.applicantid==session.student_email) & (db.logs_applicant.logid==c.id)).update(Status='Accepted')
-                    db.auth_event.insert(origin=session.student_email,user_type="student",description="accepted course "+course.cname,name=session.name,uid=session.roll)
-            	session.flash = 'Get your TA reporting form from "TA Reporting Form" button in menu bar'
-                redirect(URL(r = request, f = 'status'))
-            elif request.vars.submit=='reject':
-	    	course=db(db.Course.id==request.vars.cid).select()[0]
-		c=db(db.logs.cname==course.cname).select(db.logs.id)[0]
-		db((db.logs_applicant.applicantid==session.student_email) & (db.logs_applicant.logid==c.id)).update(Status='Rejected')
-                Id1 = db((db.AppliedFor.appid == appid) & (db.AppliedFor.cid ==request.vars.cid)).select()
-                Id2 = db(db.SelectedTA.appid == appid).select()[0]
-                if Id1 and Id2 :
-                    db((db.AppliedFor.appid == appid) & (db.AppliedFor.cid ==request.vars.cid)).delete()
-                    a=db(db.SelectedTA.appid == appid).select()[0]
-                    if a.TAtype=='quarter':
-                              b=db(db.Course.id==request.vars.cid).select()[0].no_of_qta
-                              db(db.Course.id==request.vars.cid).update(no_of_qta=b-1)                                   
-                    elif a.TAtype=='half':
-                                 b=db(db.Course.id==request.vars.cid).select()[0].no_of_hta
-                                 db(db.Course.id==request.vars.cid).update(no_of_hta=b-1)
-                    else:
-                                 b=db(db.Course.id==request.vars.cid).select()[0].no_of_fta
-                                 db(db.Course.id==request.vars.cid).update(no_of_fta=b-1)
-                    course=db(db.Course.id==request.vars.cid).select()[0]
-                    db.auth_event.insert(origin=session.student_email,user_type="student",description="rejected course "+course.cname,name=session.name,uid=session.roll)
-                
-                    db(db.SelectedTA.appid == appid).delete()
-                    
-                    db((db.AppliedFor.appid == appid)).update(noflag='0')
-                    session.flash = 'Course rejected Successfully '
-                #redirect(URL(r = request, f = 'status'))        
-    else :
-        state=0
-    print var_new;    
-    return dict(records_appliedfor=records_appliedfor,state=state,records=records,flag=flag ,new=var_new,var1=request.vars.cid)
+            0-stands for not active yet
+            1-stands for active and accepting
+            2-stands for active but not accepting i.e. date exceeded
+    """
+
+    portal_date = db(db.Portaldate.id > 0).select()
+    now = datetime.datetime.now()
+    start = portal_date[0].start_date
+    end = portal_date[0].end_date
+    if now < start:
+        return 0
+    elif now > start and now < end:
+        return 1
+    else:
+        return 3
+
+
+def status():
+    """
+        Controller for the status of applications.
+        Functionalities :
+            1. Increase Preference for a Course
+            2. Decrease Preference for a Course
+            3. Accept an offer
+            4. Reject an offer
+    """
+    var_new = 0
+    appid = db(
+        db.Applicant.apemail_id == session.student_email).select(
+        db.Applicant.id)[0]  # ----stores the applicant id of current user
+
+    courses_applied_for = db(
+        (db.AppliedFor.appid == db.Applicant.id) & (
+            db.AppliedFor.cid == db.Course.id) & (
+            db.Applicant.apemail_id == session.student_email)).select(
+                orderby=db.AppliedFor.preference)
+    status_of_applied_courses = db(
+        (db.AppliedFor.appid == db.Applicant.id) & (
+            db.AppliedFor.cid == db.Course.id) & (
+            db.Applicant.apemail_id == session.student_email)).select(
+                db.AppliedFor.status)
+    selected = 0
+
+    # if student has already accepted to be TA of a course
+    for course in status_of_applied_courses:
+        if course.status == 'Selected':
+            selected = 1
+
+    portal_date = db(db.Portaldate.id > 0).select()
+    if portal_date:
+        state = get_portal_state()
+        if state == 0:
+            # if time for applications hasn't begun
+            session.flash = 'Wait till %s' % start.strftime('%d %B %Y %I:%M%p')
+            redirect(URL(r=request, f='index'))
+
+        elif state == 1:
+            # if time of application is still running
+            if request.vars.index:
+                index = int(request.vars.index)
+            apfid = request.vars.apfid
+
+            if request.vars.submit == 'up':
+                status_up(index, courses_applied_for)
+            elif request.vars.submit == 'down':
+                if index < len(courses_applied_for) - 1 and index >= 0:
+                    status_down(index, courses_applied_for)
+
+        else:  # if time for applications is over
+            state = 0
+
+        if selected == 1:
+            state = 2
+            if request.vars.submit == 'accept':
+                var_new = 0
+                accept_offer(appid)
+
+            elif request.vars.submit == 'reject':
+                reject_offer(appid)
+    else:
+        state = 0
+    return dict(
+        records_appliedfor=courses_applied_for,
+        state=state,
+        records=courses_applied_for,
+        flag=selected,
+        new=var_new)
+
+
+def status_up(index, courses_applied_for):
+    """
+        Changes the preference of the course at 'index' to a level higher
+    """
+    pref_curr = int(courses_applied_for[index].AppliedFor.preference)
+
+    if index < len(courses_applied_for) and index > 0:
+        pref_prev = int(courses_applied_for[index - 1].AppliedFor.preference)
+        if pref_curr == pref_prev + 1:
+            db(db.AppliedFor.id == courses_applied_for[index].AppliedFor.id).update(
+                preference=pref_prev)
+            db(db.AppliedFor.id == courses_applied_for[
+               index - 1].AppliedFor.id).update(preference=pref_curr)
+        elif pref_curr > pref_prev + 1:
+            db(db.AppliedFor.id == courses_applied_for[index].AppliedFor.id).update(
+                preference=pref_curr - 1)
+
+    elif index == 0:
+        if pref_curr != 1:
+            db(db.AppliedFor.id == courses_applied_for[index].AppliedFor.id).update(
+                preference=pref_curr - 1)
+
+    redirect(URL(r=request, f='status'))
+
+
+def status_down(index, courses_applied_for):
+    """
+        Changes the preference of the course at 'index' to a level lower
+    """
+    pref_curr = int(courses_applied_for[index].AppliedFor.preference)
+    pref_next = int(courses_applied_for[index + 1].AppliedFor.preference)
+    if pref_curr == pref_next - 1:
+        db(db.AppliedFor.id == courses_applied_for[index].AppliedFor.id).update(
+            preference=pref_next)
+        db(db.AppliedFor.id == courses_applied_for[
+           index + 1].AppliedFor.id).update(preference=pref_curr)
+    elif pref_curr < pref_next - 1:
+        db(db.AppliedFor.id == courses_applied_for[index].AppliedFor.id).update(
+            preference=pref_curr + 1)
+    redirect(URL(r=request, f='status'))
+
+
+def reject_offer(appid):
+    """
+        Rejects the offered position to 'appid'
+    """
+
+    course = db(db.Course.id == request.vars.cid).select()[0]
+    c = db(db.logs.cname == course.cname).select(db.logs.id)[0]
+    db((db.logs_applicant.applicantid == session.student_email) &
+       (db.logs_applicant.logid == c.id)).update(Status='Rejected')
+    Id1 = db(
+        (db.AppliedFor.appid == appid) & (
+            db.AppliedFor.cid == request.vars.cid)).select()
+    Id2 = db(db.SelectedTA.appid == appid).select()[0]
+    if Id1 and Id2:
+        db((db.AppliedFor.appid == appid) &
+           (db.AppliedFor.cid == request.vars.cid)).delete()
+        TA_query = db(db.SelectedTA.appid == appid).select()[0]
+        if TA_query.TAtype == 'quarter':
+            No_of_Type = db(
+                db.Course.id == request.vars.cid).select()[0].no_of_qta
+            db(db.Course.id == request.vars.cid).update(
+                no_of_qta=No_of_Type - 1)
+        elif TA_query.TAtype == 'half':
+            No_of_Type = db(
+                db.Course.id == request.vars.cid).select()[0].no_of_hta
+            db(db.Course.id == request.vars.cid).update(
+                no_of_hta=No_of_Type - 1)
+        else:
+            No_of_Type = db(
+                db.Course.id == request.vars.cid).select()[0].no_of_fta
+            db(db.Course.id == request.vars.cid).update(
+                no_of_fta=No_of_Type - 1)
+        course = db(db.Course.id == request.vars.cid).select()[0]
+        db.auth_event.insert(
+            origin=session.student_email,
+            user_type="student",
+            description="rejected course " +
+            course.cname,
+            NAME=session.name,
+            uid=session.roll)
+
+        db(db.SelectedTA.appid == appid).delete()
+
+        db((db.AppliedFor.appid == appid)).update(noflag='0')
+        session.flash = 'Course rejected Successfully '
+    redirect(URL(r=request, f='status'))
+
+
+def accept_offer(appid):
+    """
+        Accepts the offered position to 'appid'
+    """
+
+    Id2 = db(db.SelectedTA.appid == appid).select()[0]
+    if Id2:  # ----check if applicant is selected by Admin
+        db(db.SelectedTA.appid == appid).update(flag=1)
+        course = db(db.Course.id == request.vars.cid).select()[0]
+        c = db(db.logs.cname == course.cname).select(db.logs.id)[0]
+        Courses = db(db.Course.id == course.id).select(db.Course.cname)
+        for i in Courses:
+            courses = i.cname
+        x = ""
+        t = datetime.datetime.now()
+        if t.month < 7:
+            x = str(t.year) + " " + "Spring"
+        else:
+            x = str(t.year) + " " + "Monsoon"
+        query = db(
+            (db.ta_records.cname == courses) & (
+                db.ta_records.time == x)).select(
+            db.ta_records.id)
+        flag_c = 0
+        entry = 0
+        for i in query:
+            entry = i.id
+        qu = db(db.Applicant.id == appid).select(db.Applicant.aprollno)
+        ROLL = 0
+        for i in qu:
+            ROLL = i.aprollno
+        if entry > 0:
+            flag_c = 1
+
+        if flag_c == 1:
+            q = db(
+                db.ta_records.cname == courses).select(
+                db.ta_records.No_of_TAs)
+            p = q[0].No_of_TAs
+            p += 1
+            db(db.ta_records.id == entry).update(No_of_TAs=p)
+            db.ta_applicant.insert(
+                ta_id=entry,
+                applicant_id=ROLL,
+                applicant_name=session.name,
+                applicantid=session.student_email)
+        else:
+            q = db(db.Course.cname == courses).select(db.Course.cid)
+            for i in q:
+                cd = i.cid
+            db.ta_records.insert(time=x, cname=courses, cid=cd, No_of_TAs=1)
+            query = db(db.ta_records.cname == courses).select(db.ta_records.id)
+            for i in query:
+                entry = i.id
+            db.ta_applicant.insert(
+                ta_id=entry,
+                applicant_id=ROLL,
+                applicant_name=session.name,
+                applicantid=session.student_email)
+        db((db.logs_applicant.applicantid == session.student_email) &
+           (db.logs_applicant.logid == c.id)).update(Status='Accepted')
+        db.auth_event.insert(
+            origin=session.student_email,
+            user_type="student",
+            description="accepted course " +
+            course.cname,
+            name=session.name,
+            uid=session.roll)
+    session.flash = 'Get your TA reporting form from "TA Reporting Form" button in menu bar'
+    redirect(URL(r=request, f='status'))
 #-------------------------------------------------------------------------------
+def student_profile():
+    """
+        Method to show student profile which includes :
+        1. Name
+        2. Roll No
+        3. Email
+        4. Phone Number
+        5. CGPA
+        6. Previous Experience
+    """
+    if (session.role != 2):
+        redirect(URL(r=request, f='index'))
+        return dict()
+    student_details = db(
+        (db.Applicant.apemail_id == session.student_email) & (
+            db.Applicant.program_id == db.Program.id)).select()
+    return dict(records=student_details)
+
+
+
+
 def isas_upload():
-    if(session.login!=1):
-	redirect(URL(r=request,f='index'))
-	return dict()
+    if(session.role != user_roles["admin"]):
+        redirect(URL(r=request,f='index'))
+        return dict()
     form = crud.create(db.isas_upload)
     if form.accepts(request.vars,session) :
-	    
-    	r=db(db.isas_upload.id>0).select()
-    	k=r[len(r)-1]
-	k=k.file.split('.')[2:]
-	k='.'.join(k)
-	db.auth_event.insert(origin=session.token,user_type="admin", description="uploaded file "+k,name=session.name,uid=session.roll)
-	i=r[len(r)-1]
-	filename=os.path.join(request.folder,'uploads',i.file)
-	f=open(filename)
-	for lines in f.readlines():
-		lines=lines.strip('\n\r')
-		list=lines.split(',')
-		test = db(db.Applicant.aprollno==list[1].strip()).select().first()
-		if( not( test )):
-			db.Applicant.insert(apname=list[0].strip(),aprollno=list[1].strip(),apcgpa=list[2].strip())
-#	        elif (not db(db.SelectedTA.id == test.id).select()):
-#                    test.apemail_id = list[2].strip()
-#                    test.apname = list[0].strip()
-#                    test.apcgpa = list[3].strip()
-#		    test.update_record()
+        r=db(db.isas_upload.id>0).select()
+        k=r[len(r)-1]
+        k=k.file.split('.')[2:]
+        k='.'.join(k)
+        db.auth_event.insert(origin=session.username,user_type="admin", description="uploaded file "+k,name=session.name,uid=session.roll)
+        i=r[len(r)-1]
+        filename=os.path.join(request.folder,'uploads',i.file)
+        f=open(filename)
+        for lines in f.readlines():
+            lines=lines.strip('\n\r')
+            list=lines.split(',')
+            test = db(db.Applicant.aprollno==list[1].strip()).select().first()
+            if( not( test )):
+                db.Applicant.insert(apname=list[0].strip(),aprollno=list[1].strip(),apcgpa=list[2].strip())
+#            elif (not db(db.SelectedTA.id == test.id).select()):
+#                test.apemail_id = list[2].strip()
+#                test.apname = list[0].strip()
+#                test.apcgpa = list[3].strip()
+#                test.update_record()
     return dict(form=form)
 
 def minta():
-    if(session.login!=1):
-	redirect(URL(r=request,f='index'))
-	return dict()
+    if(session.role != user_roles["admin"]):
+        redirect(URL(r=request,f='index'))
+        return dict()
     form = crud.create(db.isas_upload)
     if form.accepts(request.vars,session) :
-	    
-    	r=db(db.isas_upload.id>0).select()
-    	k=r[len(r)-1]
-	k=k.file.split('.')[2:]
-	k='.'.join(k)
-	db.auth_event.insert(origin=session.token,user_type="admin", description="uploaded file "+k,name=session.name,uid=session.roll)
-	i=r[len(r)-1]
-	filename=os.path.join(request.folder,'uploads',i.file)
-	f=open(filename)
-	for lines in f.readlines():
-		lines=lines.strip('\n\r')
-		list=lines.split(',')
-		test = db(db.Course.cid==list[1].strip()).select().first()
-		if(test):
-			test.no_of_ta = list[3].strip()
-            		test.update_record()
-    return dict(form=form)	
-	
+        r=db(db.isas_upload.id>0).select()
+        k=r[len(r)-1]
+        k=k.file.split('.')[2:]
+        k='.'.join(k)
+        db.auth_event.insert(origin=session.username,user_type="admin", description="uploaded file "+k,name=session.name,uid=session.roll)
+        i=r[len(r)-1]
+        filename=os.path.join(request.folder,'uploads',i.file)
+        f=open(filename)
+        for lines in f.readlines():
+            lines=lines.strip('\n\r')
+            list=lines.split(',')
+            test = db(db.Course.cid==list[1].strip()).select().first()
+            if(test):
+                test.no_of_ta = list[3].strip()
+                test.update_record()
+    return dict(form=form)
+
 def course_list():
         r=''
         form = FORM(INPUT(_type="submit",_value="SUBMIT"))
@@ -800,62 +1023,35 @@ def course_lists():
 def course_lists1():
         return dict(r=session.r)
 
-	
 def feedback_upload():
-    if(session.login!=1):
-	redirect(URL(r=request,f='index'))
-	return dict()
+    if(session.role != user_roles["admin"]):
+        redirect(URL(r=request,f='index'))
+        return dict()
     form = crud.create(db.feedback_upload)
     if form.accepts(request.vars,session) :
-	    
-    	r=db(db.feedback_upload.id>0).select()
-    	k=r[len(r)-1]
-	k=k.file.split('.')[2:]
-	k='.'.join(k)
-	db.auth_event.insert(origin=session.token,user_type="admin", description="uploaded file "+k,name=session.name,uid=session.roll)
-	i=r[len(r)-1]
-	filename=os.path.join(request.folder,'uploads',i.file)
-	f=open(filename)
-	for lines in f.readlines():
-		lines=lines.strip('\n\r')
-		list=lines.split(';')
-		if( not( db((db.Feedback.s_id==list[1].strip()) & (db.Feedback.course_id==list[2].strip())).select())):
-			db.Feedback.insert(s_id=list[1].strip(),course_id=list[2].strip(),rating=list[3].strip(),course_name=list[4].strip(),Comments=list[6].strip(),time=list[5].strip())
+        r=db(db.feedback_upload.id>0).select()
+        k=r[len(r)-1]
+        k=k.file.split('.')[2:]
+        k='.'.join(k)
+        db.auth_event.insert(origin=session.username,user_type="admin", description="uploaded file "+k,name=session.name,uid=session.roll)
+        i=r[len(r)-1]
+        filename=os.path.join(request.folder,'uploads',i.file)
+        f=open(filename)
+        for lines in f.readlines():
+            lines=lines.strip('\n\r')
+            list=lines.split(';')
+            if( not( db((db.Feedback.s_id==list[1].strip()) & (db.Feedback.course_id==list[2].strip())).select())):
+                db.Feedback.insert(s_id=list[1].strip(),course_id=list[2].strip(),rating=list[3].strip(),course_name=list[4].strip(),Comments=list[6].strip(),time=list[5].strip())
     return dict(form=form)
-#print k
-	
-def makeStringForPdf():
-    global fac 
-    appid=db(db.Applicant.apemail_id == session.student_email).select(db.Applicant.id)[0]     #----stores the applicant id of current user
-    user = db( ( db.SelectedTA.appid == appid )  & (db.Applicant.id == appid ) \
-    & ( db.Applicant.program_id == db.Program.id ) & ( db.Course.id == db.SelectedTA.cid ) ).select()[0]
-    fac=db((db.Teach.course_id==user.Course.id) & (db.Faculty.id==db.Teach.faculty_id)).select(db.Faculty.fname)
-    #print user
-    # insert any extra info you want to add in pdf form
-    data=''
-    data+="Name of the TA : "+ str(user.Applicant.apname)  + "\n"+","
-    data+=" Roll No: "+ str(user.Applicant.aprollno) + "\n"+","
-    data+="Email ID : "+ str(user.Applicant.apemail_id) + "\n"+"," 
-    data+=" Mobile No: "+str(user.Applicant.phoneno) +"\n"+","
-    
-    data+="Subject : "+ str(user.Course.cname) +"\n"+","
-    data+="Date of assuming as TA\\" + "\n" + "Commencement of tutorial classes :\n\n"+"," 
-    data+="Date of selection :" +str(user.SelectedTA.timestamp)+ "\n"+"," 
-    data+="IIIT Campus SBH Account No : "+ "\n" + "(Compulsory-11 Digits)\n (Personal SB A/c No. Only)\n\n"+","
-    data+="TA ship recommended per month :\n"+","
-    
-    data+="Other assistantships / Jobs if any :"+","
-    
-   
-    return data
+
 #----------- FUNCTIONALITY FOR ADMIN -------------------------------------------
 def getPdf():
-    if ( session.login != 2 ):
-        redirect(URL(r=request, f='index'))
-        return dict()
+    # checking whether user is student or not
+    checkIsStudent()
+
     title = "TA allocation form"
     title1 ="International Institute of Information Technology, Hyderabad"
-    text =makeStringForPdf()
+    text = PDFBuilder.makeStringForPdf()
     text=text.split(",")
     styles = getSampleStyleSheet()
     #styles.add(ParagraphStyle(name='Table Top Black Back', fontName ='Helvetica',fontSize=14, leading=16,backColor = colors.black, textColor=colors.white, alignment=TA_LEFT))
@@ -916,7 +1112,7 @@ def getPdf():
     taappform.append(Paragraph("Faculty's Signature",styles["Info4"]))
     for fname in fac:
         taappform.append(Paragraph(" &nbsp&nbsp "+fname.fname,styles["Normal"]))
-    	taappform.append(Spacer(2,0.1*inch))
+        taappform.append(Spacer(2,0.1*inch))
     taappform.append(Spacer(2,0.3*inch))
     taappform.append(Paragraph("Date: ",styles["Info3"]))
     
@@ -927,7 +1123,7 @@ def getPdf():
     return data
 #------------------modified by Team 26------------------------------------------
 def add_courses():
-    if (session.login != 1) :
+    if (session.role != user_roles["admin"]) :
         redirect(URL(r = request, f = 'index'))
         return dict()
 
@@ -946,7 +1142,7 @@ def add_courses():
 
 
     if form.accepts(request.vars, session):
-      # STORING THE ENTERED VALUES IN VARIABLES 
+        # STORING THE ENTERED VALUES IN VARIABLES 
         session.cname = request.vars.Cname
         session.cid = request.vars.Cid
         session.cofferto = request.vars.Cofferto
@@ -960,66 +1156,64 @@ def add_courses():
     return dict(form=form)
 #-------------------------------------------------------------------------------
 def view_previous_applicant_l():
-	x=request.args(0)
-	x=x.split('_')
-	x=x[0]+' '+x[1]
-#	print x
-	if(session.login!=1):
-		redirect(URL(r=request,f='index'))
-		return dict()
+    x=request.args(0)
+    x=x.split('_')
+    x=x[0]+' '+x[1]
+    if(session.role != user_roles["admin"]):
+        redirect(URL(r=request,f='index'))
+        return dict()
 
-	q=db((db.logs.id>0) & (db.logs.time==x)).select()
-	return dict(q=q)
+    q=db((db.logs.id>0) & (db.logs.time==x)).select()
+    return dict(q=q)
+
 def ta_records():
-	x=request.args(0)
-	x=x.split('_')
-	x=x[0]+' '+x[1]
-	if(session.login!=1):
-		redirect(URL(r=request,f='index'))
-		return dict()
-	q=db((db.ta_records.id>0) & (db.ta_records.time==x)).select()
-	return dict(q=q)
-	
+    x=request.args(0)
+    x=x.split('_')
+    x=x[0]+' '+x[1]
+    if(session.role != user_roles["admin"]):
+        redirect(URL(r=request,f='index'))
+        return dict()
+    q=db((db.ta_records.id>0) & (db.ta_records.time==x)).select()
+    return dict(q=q)
+
 def view_previous_applicant_log():
-	if(session.login!=1):
-		redirect(URL(r=request,f='index'))
-		return dict()
-	p=db(db.logs.id>0).select(db.logs.time)
-	l=[]
-	for i in p:
-		l.append(i['time'])
-	l=set(l)
-#print l
-	return dict(l=l)
+    if(session.role != user_roles["admin"]):
+        redirect(URL(r=request,f='index'))
+        return dict()
+    p=db(db.logs.id>0).select(db.logs.time)
+    l=[]
+    for i in p:
+        l.append(i['time'])
+    l=set(l)
+    return dict(l=l)
 
 def ta_dates():
-	if(session.login!=1):
-		redirect(URL(r=request,f='index'))
-		return dict()
-	p=db(db.ta_records.id>0).select(db.ta_records.time)
-	l=[]
-	for i in p:
-		l.append(i['time'])
-	l=set(l)
-#print l
-	return dict(l=l)
+    if(session.role != user_roles["admin"]):
+        redirect(URL(r=request,f='index'))
+        return dict()
+    p=db(db.ta_records.id>0).select(db.ta_records.time)
+    l=[]
+    for i in p:
+        l.append(i['time'])
+    l=set(l)
+    return dict(l=l)
 
 
 def detail_view():
-	if(session.login!=1):
-		redirect(URL(r=request,f='index'))
-		return dict()
-	q=request.args(0)
-	l=db(db.logs_applicant.logid==q).select()
-	return dict(l=l)
+    if(session.role != user_roles["admin"]):
+        redirect(URL(r=request,f='index'))
+        return dict()
+    q=request.args(0)
+    l=db(db.logs_applicant.logid==q).select()
+    return dict(l=l)
 
 def ta_detail_view():
-	if(session.login!=1):
-		redirect(URL(r=request,f='index'))
-		return dict()
-	q=request.args(0)
-	l=db(db.ta_applicant.ta_id==q).select()
-	return dict(l=l)
+    if(session.role != user_roles["admin"]):
+        redirect(URL(r=request,f='index'))
+        return dict()
+    q=request.args(0)
+    l=db(db.ta_applicant.ta_id==q).select()
+    return dict(l=l)
 #-----used to get faculties details after add_courses and insert records in database
 
 def add_courses1():
@@ -1037,29 +1231,29 @@ def add_courses1():
         profname = request.vars.prof_name
         profemail = request.vars.prof_email
         if nof==1:
-		if(profname==None or profemail==None or profname=='' or profemail==''):
-			session.flash="Fill All Fields"
-			redirect(URL(r = request, f = 'add_courses1'))
-					
-	else:
-		for i in range(0,int(nof)):
-			if(profname[i]==None or profemail[i]==None or profname[i]=='' or profemail[i]==''):
-				session.flash="Fill All Fields"
-				redirect(URL(r = request, f = 'add_courses1'))
-		
+            if(profname==None or profemail==None or profname=='' or profemail==''):
+                session.flash="Fill All Fields"
+                redirect(URL(r = request, f = 'add_courses1'))
+
+        else:
+            for i in range(0,int(nof)):
+                if(profname[i]==None or profemail[i]==None or profname[i]=='' or profemail[i]==''):
+                    session.flash="Fill All Fields"
+                    redirect(URL(r = request, f = 'add_courses1'))
+
         r = db(db.Course.cid == cid).select() 
         if(r):                 # if course is already there in the database
             a = 1
             for i in r:
                 use_id = i.id                               # if yes then  use_id <= Course.id of that course
         else:                                       # else insert that course                       
-            db.auth_event.insert(origin=session.token,user_type="admin",description="added course "+cname,name=session.name,uid=session.roll)
+            db.auth_event.insert(origin=session.username,user_type="admin",description="added course "+cname,name=session.name,uid=session.roll)
             use_id = db.Course.insert(cid = cid, cname = cname, cdts = cdts,\
             no_of_ta = nota,no_of_qta = 0, no_of_hta = 0, no_of_fta = 0, coursetype = ctype, sem_id = semid, hours_per_week = hours,no_of_faculty=nof)
         if nof==1 :
             s = db(db.Faculty.femail_id == profemail).select()
             #if profname!="":
-            db.auth_event.insert(origin=session.token,user_type="admin",description="added faculty "+ profname+" for course "+cname,name=session.name,uid=session.roll) 
+            db.auth_event.insert(origin=session.username,user_type="admin",description="added faculty "+ profname+" for course "+cname,name=session.name,uid=session.roll) 
                    
             if(s):                                      # if faculty is already present in the database
                 for row in s:
@@ -1076,7 +1270,7 @@ def add_courses1():
             for i in range(0,int(nof)):
                 s = db(db.Faculty.femail_id == profemail[i]).select()
                 #if profname[i]!="":
-		db.auth_event.insert(origin=session.token,user_type="admin",description="added faculty "+ profname[i]+" for course "+cname,name=session.name,uid=session.roll)   
+                db.auth_event.insert(origin=session.username,user_type="admin",description="added faculty "+ profname[i]+" for course "+cname,name=session.name,uid=session.roll)   
                 if(s):                                      # if faculty is already present in the database
                     for row in s:
                         newprof_id = row.id                                 # if yes then newprof_if <= Faculty.id of that faculty          
@@ -1102,7 +1296,7 @@ def add_courses1():
 
 #-------------------------------------------------------------------------------
 def add_faculty():
-    if session.login != 1:                      # -------- check if admin has logged in or not -------------------
+    if session.role != user_roles["admin"]:                      # -------- check if admin has logged in or not -------------------
         redirect(URL(r = request, f = 'index'))
         return dict()
     form=form_factory(
@@ -1127,8 +1321,8 @@ def add_faculty():
             nof=db(db.Course.id==course).select(db.Course.no_of_faculty)[0]
             db(db.Course.id==course).update(no_of_faculty=nof.no_of_faculty+1)   #----increasing the count of faculty of a course by 1---
         c=db(db.Course.id==course).select()[0]
-	#if profname!="":
-        db.auth_event.insert(origin=session.token,user_type="admin",description="added faculty "+profname+" to course "+c.cname,name=session.name,uid=session.roll)
+        #if profname!="":
+        db.auth_event.insert(origin=session.username,user_type="admin",description="added faculty "+profname+" to course "+c.cname,name=session.name,uid=session.roll)
         session.flash = 'Faculty Successfully Added'
         redirect(URL(r = request, f = 'add_faculty'))
     return dict(form=form)
@@ -1136,7 +1330,7 @@ def add_faculty():
 
 #-------------------------------------------------------------------------------
 def add_program():
-    if session.login != 1:                      # -------- check if admin has logged in or not -------------------
+    if session.role != user_roles["admin"]:                      # -------- check if admin has logged in or not -------------------
         redirect(URL(r = request, f = 'index'))
         return dict()
     form=form_factory(
@@ -1152,7 +1346,7 @@ def add_program():
             db.OfferedTo.insert(cid = course, programid = program)    #---- insert in OfferedTo table------
         c=db(db.Course.id==course).select()[0]
         p=db(db.Program.id==program).select()[0]
-        db.auth_event.insert(origin=session.token,user_type="admin",description="added program "+p.pname+" to course "+c.cname,name=session.name,uid=session.roll)
+        db.auth_event.insert(origin=session.username,user_type="admin",description="added program "+p.pname+" to course "+c.cname,name=session.name,uid=session.roll)
         session.flash = 'Program Successfully Added'
         redirect(URL(r = request, f = 'add_program'))
     return dict(form=form)
@@ -1160,7 +1354,7 @@ def add_program():
 
 #-------------------------------------------------------------------------------
 def update_course():
-    if session.login != 1:                      # -------- check if admin has logged in or not -------------------
+    if session.role != user_roles["admin"]:                      # -------- check if admin has logged in or not -------------------
         redirect(URL(r = request, f = 'index'))
         return dict()
     session.admin_varCid=""
@@ -1180,16 +1374,16 @@ def update_course():
 #-------------------------------------------------------------------------------
 
 def delete():
-    if session.login != 1:                      # -------- check if admin has logged in or not -------------------
-          redirect(URL(r = request, f = 'index'))
-          return dict()
+    if session.role != user_roles["admin"]:                      # -------- check if admin has logged in or not -------------------
+        redirect(URL(r = request, f = 'index'))
+        return dict()
     course =db(db.Course.id>0).select()
     if request.vars.submit:
         session.courseid=request.vars.cid
         if request.vars.confirm=='yes':         #-----checks if user have confirm the deletion
             if request.vars.submit=='Del_Course':
                 c=db(db.Course.id==session.courseid).select()[0]
-                db.auth_event.insert(origin=session.token,user_type="admin",description="deleted course "+c.cname,name=session.name,uid=session.roll)
+                db.auth_event.insert(origin=session.username,user_type="admin",description="deleted course "+c.cname,name=session.name,uid=session.roll)
                 db(db.AppliedFor.cid == session.courseid).delete()
                 db(db.Course.id == session.courseid).delete()
                 db(db.SelectedTA.cid == session.courseid).delete()
@@ -1205,14 +1399,14 @@ def delete():
 #-------------------------------------------------------------------------------
 #-------------------------------------------------------------------------------
 def delete_faculty():
-    if session.login != 1:                      # -------- check if admin has logged in or not -------------------
+    if session.role != user_roles["admin"]:                      # -------- check if admin has logged in or not -------------------
         redirect(URL(r = request, f = 'index'))
         return dict()
     fname=db((db.Teach.course_id==session.courseid)&(db.Teach.faculty_id==db.Faculty.id)).select()
     if request.vars.submit:
-	faculty_name=db((db.Faculty.id==db.Teach.faculty_id) & (db.Teach.id == request.vars.fid)).select()[0]
+        faculty_name=db((db.Faculty.id==db.Teach.faculty_id) & (db.Teach.id == request.vars.fid)).select()[0]
         c=db(db.Course.id==session.courseid).select()[0]       
-        db.auth_event.insert(origin=session.token,user_type="admin",description="deleted faculty "+faculty_name.Faculty.fname+" for course "+c.cname,name=session.name,uid=session.roll)
+        db.auth_event.insert(origin=session.username,user_type="admin",description="deleted faculty "+faculty_name.Faculty.fname+" for course "+c.cname,name=session.name,uid=session.roll)
         db(db.Teach.id == request.vars.fid).delete()
         nof=db(db.Course.id==session.courseid).select(db.Course.no_of_faculty)[0]
         db(db.Course.id==session.courseid).update(no_of_faculty=nof.no_of_faculty-1)   #----decreasing the count of faculty of a course by 1---
@@ -1229,15 +1423,15 @@ def delete_faculty():
 #-------------------------------------------------------------------------------
 #-------------------------------------------------------------------------------
 def delete_program():
-    if session.login != 1:                      # -------- check if admin has logged in or not -------------------
-          redirect(URL(r = request, f = 'index'))
-          return dict()
+    if session.role != user_roles["admin"]:                      # -------- check if admin has logged in or not -------------------
+        redirect(URL(r = request, f = 'index'))
+        return dict()
 
     program=db((db.OfferedTo.cid==session.courseid)&(db.OfferedTo.programid==db.Program.id)).select()
     if request.vars.submit:
         c=db(db.Course.id==session.courseid).select()[0]
         program=db(db.Program.id==request.vars.pid).select()[0]
-        db.auth_event.insert(origin=session.token,user_type="admin",description="deleted program "+program.pname+" for course "+c.cname,name=session.name,uid=session.roll)
+        db.auth_event.insert(origin=session.username,user_type="admin",description="deleted program "+program.pname+" for course "+c.cname,name=session.name,uid=session.roll)
         db(db.OfferedTo.id == request.vars.pid).delete()
         if (db(db.OfferedTo.cid == session.courseid).count() == 0) :
             db(db.AppliedFor.cid == session.courseid).delete()
@@ -1253,9 +1447,9 @@ def delete_program():
 
 #-------------------------NOT IN USE--------------------------------------------
 def delete_courses():
-    if session.login != 1:                      # -------- check if admin has logged in or not -------------------
-          redirect(URL(r = request, f = 'index'))
-          return dict()
+    if session.role != user_roles["admin"]:                      # -------- check if admin has logged in or not -------------------
+        redirect(URL(r = request, f = 'index'))
+        return dict()
 
     form = form_factory(                        # -------- creating form for the delete course --------------           
           SQLField('course', label = 'Select Course  ', requires = IS_IN_DB(db, 'Course.id', '%(cname)s  ( %(cid)s ) ' )),
@@ -1266,7 +1460,7 @@ def delete_courses():
 #-------------------------------------------------------------------------------
 # Allows Admin to see detail of Applicant
 def applicant_profile():
-    if ( session.login != 1 ):
+    if session.role != user_roles["admin"]:
         redirect(URL(r=request, f='index'))
         return dict()
     records = db((db.Applicant.apemail_id == request.args(0)) & (db.Applicant.program_id == db.Program.id)).select()
@@ -1277,9 +1471,9 @@ def applicant_profile():
 #-------------------------------------------------------------------------------
 def namewise_list():
 # ALLOWS ADMIN TO SEE THE APPLICANT LIST NAMEWISE 
-    if (session.login != 1) :
-          redirect(URL(r = request, f = 'index'))
-          return dict()
+    if session.role != user_roles["admin"]:
+        redirect(URL(r = request, f = 'index'))
+        return dict()
 
     r = ''
 # form for select the applicant name 
@@ -1287,7 +1481,7 @@ def namewise_list():
           SQLField('applicantId', label = 'Select Applicant', requires = IS_IN_DB(db, 'Applicant.id',\
             '%(apname)s (%(aprollno)s)')))
     if form.accepts(request.vars, session):
-          r = db((db.Applicant.id == db.AppliedFor.appid) & (db.Course.id == db.AppliedFor.cid) &\
+        r = db((db.Applicant.id == db.AppliedFor.appid) & (db.Course.id == db.AppliedFor.cid) &\
             (db.Applicant.id == request.vars.applicantId)).select()
     return dict(form = form, msg = r)
 #-------------------------------------------------------------------------------
@@ -1295,55 +1489,55 @@ def namewise_list():
 #-------------------------------------------------------------------------------
 #------------------ ALLOWS ADMIN TO SEE THE LIST OF SELECTED APPLICANTS CATEGORY WISE eg: NAME, COURSE, ROLLNO etc.......-------------------
 def selected_TA():
-       if session.login !=1 :
-          redirect(URL(r = request, f = 'index'))
-          return dict()
-       return dict()
+    if session.role != user_roles["admin"]:
+        redirect(URL(r = request, f = 'index'))
+        return dict()
+    return dict()
 #-------------------------------------------------------------------------------
 #-------------------------------------------------------------------------------
 def course_selected_ta():
-       if session.login !=1 :
-          redirect(URL(r = request, f = 'index'))
-          return dict()
-       id2 =  request.args(0)
-       return dict(id2=id2)     
+    if session.role != user_roles["admin"]:
+        redirect(URL(r = request, f = 'index'))
+        return dict()
+    id2 =  request.args(0)
+    return dict(id2=id2)   
 
 #-------------------------------------------------------------------------------
 
 
 #-------------------------------------------------------------------------------
 def update_ta():
-        a=0
-        r= db(db.Course.id > 0).select()
-        for i in r:
-           
-           quater=db((db.SelectedTA.cid==i.id)&(db.SelectedTA.TAtype=="quarter")).count()
-           half=db((db.SelectedTA.cid==i.id)&(db.SelectedTA.TAtype=="half")).count()
-           full=db((db.SelectedTA.cid==i.id)&(db.SelectedTA.TAtype=="full")).count()
-           db(db.Course.id == i.id).update(no_of_qta = quater )
-           db(db.Course.id == i.id).update(no_of_hta = half)
-           db(db.Course.id == i.id).update(no_of_fta = full)
-           a=a+half+full+quater
-        
-        response.flash = "%d records modified" % a
-        return dict()
+    a=0
+    r= db(db.Course.id > 0).select()
+    for i in r:
+       
+        quater=db((db.SelectedTA.cid==i.id)&(db.SelectedTA.TAtype=="quarter")).count()
+        half=db((db.SelectedTA.cid==i.id)&(db.SelectedTA.TAtype=="half")).count()
+        full=db((db.SelectedTA.cid==i.id)&(db.SelectedTA.TAtype=="full")).count()
+        db(db.Course.id == i.id).update(no_of_qta = quater )
+        db(db.Course.id == i.id).update(no_of_hta = half)
+        db(db.Course.id == i.id).update(no_of_fta = full)
+        a=a+half+full+quater
+    
+    response.flash = "%d records modified" % a
+    return dict()
 #-------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------
 def sel_course():
-        if session.login != 1:                                          
-              redirect(URL(r = request, f = 'index'))
-              return dict()
+    if session.role != user_roles["admin"]:
+        redirect(URL(r = request, f = 'index'))
+        return dict()
 
-        form = form_factory(                                                               
-              SQLField('course', label = 'Select Course  ', requires = IS_IN_DB(db, 'Course.id', '%(cname)s  ( %(cid)s ) ' )))
-        if form.accepts(request.vars, session):
-                redirect(URL(r = request, f = 'unselected_TA',args=[form.vars.course]))
-        return dict(form=form)
+    form = form_factory(
+            SQLField('course', label = 'Select Course  ', requires = IS_IN_DB(db, 'Course.id', '%(cname)s  ( %(cid)s ) ' )))
+    if form.accepts(request.vars, session):
+        redirect(URL(r = request, f = 'unselected_TA',args=[form.vars.course]))
+    return dict(form=form)
 #-------------------------------------------------------------------------------
 
 def unselected_TA():
-    if session.login !=1 :
+    if session.role != user_roles["admin"]:
         redirect(URL(r = request, f = 'index'))
         return dict()
     formvars=""
@@ -1360,7 +1554,7 @@ def unselected_TA():
             applicantId = db(db.Applicant.aprollno == i.Applicant.aprollno).select()[0]
             if form.vars[str(i.SelectedTA.id)]=="on":
                 c=db(db.Course.id==i.SelectedTA.cid).select()[0]
-                db.auth_event.insert(origin=session.token,user_type="admin",description="unselected "+applicantId.apname+" for course "+c.cname,name=session.name,uid=session.roll)
+                db.auth_event.insert(origin=session.username,user_type="admin",description="unselected "+applicantId.apname+" for course "+c.cname,name=session.name,uid=session.roll)
                 db((db.AppliedFor.appid == applicantId.id)).update(noflag = '0')
                 db((db.AppliedFor.appid == applicantId.id) & (db.AppliedFor.cid==request.args[0])).update(status='None')
                 db(db.SelectedTA.id == i.SelectedTA.id).delete()
@@ -1380,7 +1574,7 @@ def unselected_TA():
 #----------------- DISPLAYS THE LIST OF APPLICANTS FOR A SELECTED COURSE -----------------------------------------------
 
 def admin_applicant_list_2():
-    if (session.login != 1) :
+    if session.role != user_roles["admin"]:
         redirect(URL(r = request, f = 'index'))
         return dict()
     if request.vars.suggest=="no":               #--------------if reset button is pressed
@@ -1393,14 +1587,13 @@ def admin_applicant_list_2():
     else: 
         if((not request.vars.submit) and  request.vars.submit!="No_list"):
             session.p=""
-	    print request.args
-	    if len(request.args):
-                    if session.admin_varCid != request.args(0):
-			    session.mark.clear()
-                    session.admin_varCid=request.args(0)
-	    else:
-                session.admin_varCid=""
-	        session.mark.clear()
+            if len(request.args):
+                if session.admin_varCid != request.args(0):
+                    session.mark.clear()
+                session.admin_varCid=request.args(0)
+        else:
+            session.admin_varCid=""
+            session.mark.clear()
     var=session.p
     records = db((db.AppliedFor.cid == session.admin_varCid) & (db.Applicant.id == db.AppliedFor.appid) & \
                                           (db.AppliedFor.cid==db.Course.id) & (db.Applicant.program_id == db.Program.id)).select(orderby=(var))
@@ -1411,8 +1604,8 @@ def admin_applicant_list_2():
         session.admin_varCid=request.vars.course
         records = db((db.AppliedFor.cid == request.vars.course) & (db.Applicant.id == db.AppliedFor.appid) & \
                                        (db.AppliedFor.cid==db.Course.id) & (db.Applicant.program_id == db.Program.id)).select()
-	session.mark.clear()
-	redirect(URL(r = request, args = request.vars.course,f = 'admin_applicant_list_2'))
+        session.mark.clear()
+        redirect(URL(r = request, args = request.vars.course,f = 'admin_applicant_list_2'))
         session.p=""
     if session.admin_varCid!="":
         coursename=db((db.Course.id==session.admin_varCid)).select()[0].cname
@@ -1424,15 +1617,15 @@ def admin_applicant_list_2():
 
 #-------------------------------------------------------------------------------
 def admin_applicant_list_3():
-    if ( session.login != 1 ):
-          redirect(URL(r = request, f = 'index'))
-          return dict()
+    if session.role != user_roles["admin"]:
+        redirect(URL(r = request, f = 'index'))
+        return dict()
     return dict()
 #-------------------------------------------------------------------------------
 
 #---------------------------function to set dates------------------------------- 
 def set_date():
-    if ( session.login != 1 ):
+    if session.role != user_roles["admin"]:
         redirect(URL(r = request, f = 'index'))
         return dict()
     check=db(db.Portaldate.id>0).select()
@@ -1455,12 +1648,12 @@ def set_date():
             db(db.Portaldate.id>0).update(start_date=start,end_date=end)
         else :    
             db.Portaldate.insert(start_date=start,end_date=end)
-        db.auth_event.insert(origin=session.token,user_type="admin",description="set start date to "+start+" and end date to "+end,name=session.name,uid=session.roll)
+        db.auth_event.insert(origin=session.username,user_type="admin",description="set start date to "+start+" and end date to "+end,name=session.name,uid=session.roll)
         response.flash = "Date changed."
     return dict(form=form,start=start,end=end)
 #-------------------------------------------------------------------------------
 def nominate_date():
-    if ( session.login != 1 ):
+    if session.role != user_roles["admin"]:
         redirect(URL(r = request, f = 'index'))
         return dict()
     check=db(db.Faculty_deadline.id>0).select()
@@ -1483,7 +1676,7 @@ def nominate_date():
             db(db.Faculty_deadline.id>0).update(start_date=start,end_date=end)
         else :    
             db.Faculty_deadline.insert(start_date=start,end_date=end)
-        db.auth_event.insert(origin=session.token,user_type="admin",description="set faculty deadline start date to "+start+" and end date to "+end,name=session.name,uid=session.roll)
+        db.auth_event.insert(origin=session.username,user_type="admin",description="set faculty deadline start date to "+start+" and end date to "+end,name=session.name,uid=session.roll)
         response.flash = "Date changed."
     return dict(form=form,start=start,end=end)
 #-------- FUNCTION FOR MAKING THE SUBJECT TO BE SENDED TO THE TAs --------------
@@ -1516,7 +1709,7 @@ def MakeStringForad(course, courseId, list):
 #------- FUNCTION FOR SENDING MAIL BY THE ADMIN TO THE FACULTY AND TA'S --------
 def admin_send_mail():
     msg=''
-    if ( session.login != 1) :
+    if session.role != user_roles["admin"]:
             redirect(URL(r = request,f='index'))
             return dict()
 
@@ -1548,18 +1741,18 @@ def admin_send_mail():
     text = MakeStringForad(courseId.Course.cname, courseId.Course.cid, listForFacultyText)
     returnValue1 = sendmail(sender, sender, text, title)
     if returnValue1 == 1:
-       db.auth_event.insert(origin=sender,user_type="admin",description="mail sent to " + str(reciever),name=session.name,uid=session.roll)
-       msg = 'Mail Sent successfully'
+        db.auth_event.insert(origin=sender,user_type="admin",description="mail sent to " + str(reciever),name=session.name,uid=session.roll)
+        msg = 'Mail Sent successfully'
     else:
-       msg = 'Mail Sending failed'
+        msg = 'Mail Sending failed'
     return dict(msg=msg,courseId = back)
 #-------------------------------------------------------------------------------
 
 #-------------------------------------------------------------------------------
 def admin_allocatedTA():
-    if( session.login != 1):
-       redirect(URL(r = request, f = 'index'))
-       return dict()
+    if session.role != user_roles["admin"]:
+        redirect(URL(r = request, f = 'index'))
+        return dict()
 
     records = db(db.Course.id > 0).select()
     return dict(records=records)
@@ -1568,12 +1761,8 @@ def admin_allocatedTA():
 #--------- ALLOWS ADMIN TO UPLOAD A FILE WHICH CONTAINS THE COURSE INFO --------
 # -------------- AN ALTERNATE FOR THE ADD COURSES QUERY ------------------------
 
-
-
-import os
-
 def upload():
-    if( session.login != 1):
+    if session.role != user_roles["admin"]:
         redirect(URL(r = request, f = 'index'))
         return dict()
     
@@ -1582,16 +1771,11 @@ def upload():
     if form.accepts(request.vars, session):
         response.flash = 'file uploaded'
         f=request.vars.file
-        #print f
         r = db(db.Upload.id > 0).select()
-        #print r
         k=r[len(r)-1]
-        #print k
         k=k.file.split('.')[2:]
-        #print k
         k='.'.join(k)
-        #print k
-        db.auth_event.insert(origin=session.token,user_type="admin", description="uploaded file "+k,name=session.name,uid=session.roll)
+        db.auth_event.insert(origin=session.username,user_type="admin", description="uploaded file "+k,name=session.name,uid=session.roll)
         i=r[len(r)-1]
         filename = os.path.join(request.folder, 'uploads', i.file)
         f = open(filename)
@@ -1601,12 +1785,12 @@ def upload():
             lines = lines.strip('\n\r')
             list = lines.split(',')
             if( not( db(db.Course.cid == list[1].strip()).select() ) ):
-		getCid = db.Course.insert(cname = list[0].strip(), cid = list[1].strip(),\
-		cdts = list[2].strip(' '), no_of_ta = 10,no_of_qta = 0, no_of_hta = 0, no_of_fta = 0, \
-		hours_per_week = 5, \
-		sem_id = 1,\
-		coursetype = list[3].strip(),\
-		no_of_faculty=list[4].strip())
+                getCid = db.Course.insert(cname = list[0].strip(), cid = list[1].strip(),\
+                cdts = list[2].strip(' '), no_of_ta = 10,no_of_qta = 0, no_of_hta = 0, no_of_fta = 0, \
+                hours_per_week = 5, \
+                sem_id = 1,\
+                coursetype = list[3].strip(),\
+                no_of_faculty=list[4].strip())
             else:
                 getCid = db(db.Course.cid == list[1].strip()).select()[0].id
             for j in range(0,int(list[4])):
@@ -1620,7 +1804,7 @@ def upload():
 
 
 def edit_max():
-    if session.login != 1:                      
+    if session.role != user_roles["admin"]:
         redirect(URL(r = request, f = 'index'))
         return dict()
     id1 = request.args(0)
@@ -1637,14 +1821,14 @@ def edit_max():
 #-------- ALLOWS FACULTY TO SEE THE APPLICANTS LIST FOR THE SELECTED COURSE ----
 def faculty_applicant_list_2():
         
-    if (session.login != 3) :
+    if session.role != user_roles["faculty"]:
         redirect(URL(r = request, f = 'index'))
         return dict()
     if request.vars.suggest=="no":
         session.p=""
     elif request.vars.suggest=="True":
         if session.p!="":
-           session.p=session.p+ ',' + request.vars.s
+            session.p=session.p+ ',' + request.vars.s
         else:
             session.p=request.vars.s
     else: 
@@ -1663,7 +1847,7 @@ def faculty_applicant_list_2():
                                                   (db.Teach.course_id == db.Course.id)), 'Course.id', '%(cname)s ( %(cid)s )')))
     
     #form34 =form_factory(SQLField('course', label = "Select Course ", requires =\
-    #                                                  IS_IN_DB(db((db.Faculty.femail_id == session.token)&(db.Teach.faculty_id == db.Faculty.id) & \
+    #                                                  IS_IN_DB(db((db.Faculty.femail_id == session.username)&(db.Teach.faculty_id == db.Faculty.id) & \
     #                                              (db.Teach.course_id == db.Course.id)), 'Course.id', '%(cname)s ( %(cid)s )')))
 
     if form34.accepts(request.vars,session):
@@ -1680,32 +1864,40 @@ def faculty_applicant_list_2():
         flag=1
     session.p=""
     if session.faculty_varCid!="":
-         coursename=db((db.Course.id==session.faculty_varCid)).select()[0].cname
+        coursename=db((db.Course.id==session.faculty_varCid)).select()[0].cname
     else:
         coursename=""
     return dict(flag=flag,form34=form34,records=records,coursename=coursename,courseid=session.faculty_varCid)
 #-------------------------------------------------------------------------------
 
+
 #-------------------------------------------------------------------------------
 def faculty_applicant_list_3():
-    if (session.login != 3):
+    if session.role != user_roles["faculty"]:
         redirect(URL(r = request, f = 'index'))
         return dict()
     return dict()
+
+
+
 #-------------------------------------------------------------------------------
 def help():
-    return dict(mesg=session.token)
+    return dict(message=session.username)
 #-------------------------------------------------------------------------------
+
+
 #--------- RETURNS A STRING WHICH IS THE SUBJECT OF THE MAIL BELOW -------------
 def MakeStringForAdmin(courseName, courseId, list, sem):
     string="I nominate \n" + list + "for " + courseName + "(" + courseId +") for " + sem + "."
     return string
 #-------------------------------------------------------------------------------
 
+
+
 #---- ALLOWS FACULTY TO SEND MAIL TO THE ADMIN FOR THE NOMINATIONS FOR THEIR COURSE --------------------------
 def faculty_send_mail():
     msg=''
-    if (session.login != 3) :
+    if session.role != user_roles["faculty"]:
         redirect(URL(r = request, f = 'index'))
         return dict()
 
@@ -1719,7 +1911,6 @@ def faculty_send_mail():
         record = db(db.Applicant.aprollno == roll).select()[0]
         listForAdminText += 'Name: '+ record.apname + '\r\nTA Type: ' + session.faculty_rollType[roll] + '\r\nRoll No.: ' + \
               str(record.aprollno) + '\r\nPhone No.: ' + str(record.phoneno) + '\r\nEmailid: ' + record.apemail_id + '\r\n\r\n'
-#       reciever = record.apemail_id
     reciever_g = db(db.Admin.id > 0).select()[0]
     reciever_g = reciever_g.ademail_id
     reciever_k = db(db.Admin.id > 0).select()[2]
@@ -1732,19 +1923,19 @@ def faculty_send_mail():
     returnValue1 = sendmail(sender, reciever_g,  text, title)
     returnValue1 = 1
     if (returnValue1 == 1) :
-       db.auth_event.insert(origin=sender,user_type="faculty",description="sent mail to" + str(reciever_g),name=session.name,uid=session.roll)
-       msg = 'Mail Sent successfully'
+        db.auth_event.insert(origin=sender,user_type="faculty",description="sent mail to" + str(reciever_g),name=session.name,uid=session.roll)
+        msg = 'Mail Sent successfully'
     else:
-       msg = 'Mail Sending failed'
+        msg = 'Mail Sending failed'
     sendmail(sender, sender, text, title)
     return dict(msg=msg)
 #-------------------------------------------------------------------------------
 
 #-------- ALLOWS FACULTY TO SEE THE TAS ALLOCATED IN THEIR COURSES -------------
 def faculty_allocatedTA():
-    if( session.login != 3 ):
-       redirect(URL(r = request, f = 'index'))
-       return dict()
+    if session.role != user_roles["faculty"]:
+        redirect(URL(r = request, f = 'index'))
+        return dict()
 
     records = db((db.Faculty.id == db.Teach.faculty_id) & (db.Teach.course_id == db.Course.id) & \
           (db.Faculty.femail_id == session.faculty_login_emailid)).select()
@@ -1753,7 +1944,7 @@ def faculty_allocatedTA():
 
 #-------------------------------------------------------------------------------
 def faculty_selectedTA():
-    if(session.login != 3):
+    if session.role != user_roles["faculty"]:
         redirect(URL(r = request, f = 'index'))
         return dict()
 #----------added (db.SelectedTA.flag==1) to select query to retrive applicant who have accepted the taship
@@ -1769,45 +1960,44 @@ def logtable():
     row=None
     
     form = form_factory(
-                        SQLField('email', 'string'),
-                        SQLField('date', 'date',requires=IS_EMPTY_OR(IS_DATE())),
-                        SQLField('user', requires=IS_EMPTY_OR(IS_IN_SET(['faculty','student','admin']))),
-                        SQLField('name','string'),
-                        SQLField('uid','string'))
+            SQLField('email', 'string'),
+            SQLField('date', 'date',requires=IS_EMPTY_OR(IS_DATE())),
+            SQLField('user', requires=IS_EMPTY_OR(IS_IN_SET(['faculty','student','admin']))),
+            SQLField('name','string'),
+            SQLField('uid','string'))
                         
     if form.accepts(request,session):
              
-             var1=form.vars.date
-             var2=form.vars.email
-             var3=form.vars.user
-             var4=form.vars.name
-             var5=form.vars.uid
-             if var4==None:
-                 var4=''
-             if var3==None:
-                 var3=''
-             if (var1!=None) & (var5!='') :
-                
-                 row=db( (db.auth_event.origin.regexp("%"+var2+"%")) & (db.auth_event.user_type.startswith(var3)) &
-                         (db.auth_event.time_stamp.year()==var1.year) & (db.auth_event.time_stamp.month()==var1.month) & (db.auth_event.time_stamp.day()==var1.day) & (db.auth_event.name.like("%"+var4+"%")) & (db.auth_event.uid==var5)).select()
-             
-             elif (var1==None) & (var5!=''):
-                  
-                  row=db( (db.auth_event.origin.like("%"+var2+"%")) & (db.auth_event.user_type.startswith(var3)) &
-                          (db.auth_event.name.like("%"+var4+"%")) & (db.auth_event.uid==var5)).select()
-             elif (var1!=None) & (var5==''):
-                 
-                 row=db( (db.auth_event.origin.like("%"+var2+"%")) & (db.auth_event.user_type.startswith(var3)) &
-                         (db.auth_event.time_stamp.year()==var1.year) & (db.auth_event.time_stamp.month()==var1.month) & (db.auth_event.time_stamp.day()==var1.day) & (db.auth_event.name.like("%"+var4+"%"))).select()
-             else:
-                 
-                 row=db( (db.auth_event.origin.like("%"+var2+"%")) & (db.auth_event.user_type.startswith(var3)) & (db.auth_event.name.like("%"+var4+"%"))).select()
+        var1=form.vars.date
+        var2=form.vars.email
+        var3=form.vars.user
+        var4=form.vars.name
+        var5=form.vars.uid
+        if var4==None:
+            var4=''
+        if var3==None:
+            var3=''
+        if (var1!=None) & (var5!='') :
+            row=db( (db.auth_event.origin.regexp("%"+var2+"%")) & (db.auth_event.user_type.startswith(var3)) &
+                 (db.auth_event.time_stamp.year()==var1.year) & (db.auth_event.time_stamp.month()==var1.month) & (db.auth_event.time_stamp.day()==var1.day) & (db.auth_event.name.like("%"+var4+"%")) & (db.auth_event.uid==var5)).select()
+
+        elif (var1==None) & (var5!=''):
+
+            row=db( (db.auth_event.origin.like("%"+var2+"%")) & (db.auth_event.user_type.startswith(var3)) &
+                  (db.auth_event.name.like("%"+var4+"%")) & (db.auth_event.uid==var5)).select()
+        elif (var1!=None) & (var5==''):
+
+            row=db( (db.auth_event.origin.like("%"+var2+"%")) & (db.auth_event.user_type.startswith(var3)) &
+                 (db.auth_event.time_stamp.year()==var1.year) & (db.auth_event.time_stamp.month()==var1.month) & (db.auth_event.time_stamp.day()==var1.day) & (db.auth_event.name.like("%"+var4+"%"))).select()
+        else:
+
+            row=db( (db.auth_event.origin.like("%"+var2+"%")) & (db.auth_event.user_type.startswith(var3)) & (db.auth_event.name.like("%"+var4+"%"))).select()
     return dict(form=form,row=row)
 ################################################################################
 ################################################################################
 def index():
 
-    session.login = 0
+    session.role = user_roles["none"]
     session.LOGGEDIN = 0
     redirect(URL(r=request,f='login'))
     """
@@ -1881,72 +2071,71 @@ def admin_contact():
 #       return mail.settings.keys()
 #send the message
     print "Mail to be sent"
-    a=mail.send(to=reciever, subject=subj, mesg=title)
+    a=mail.send(to=reciever, subject=subj, message=title)
     redirect(URL('contacts'))
 
 #--------------------------------------------------------------------------
 
-import re
 def notify():
-  if(session.login == 1):
-   x=db(db.auth_event.description!="logged in").select()
-   timelog_admin=[]
-   for i in range(len(x)):
-    if x[i].description!="logged out":
-      timelog_admin.append(x[i])
-   return dict(timelog_admin=timelog_admin)
-  elif (session.login == 3):
-   x=db(db.Faculty.femail_id == session.token).select() #& db.Faculty.id == db.Teach.faculty_id & db.Teach.course_id == db.course.cid).select(db.Faculty.ALL, db.Teach.ALL, db.course.ALL)
-   y=db(x[0].id == db.Teach.faculty_id).select()
-   course=[]
-   for i in range(len(y)):
-    timelog=db(y[i].course_id == db.Course.id).select(db.Course.ALL)
-    course.append(timelog[0].cname)
-   timelog_course=[]
-   for i in db().select(db.auth_event.ALL):
-    for j in course:
-      if re.findall(j,i.description):
-        timelog_course.append(i)
-  # timelog=db(db.Faculty.femail_id==session.token & db.Faculty.id == db.Teach.faculty_id & db.Teach.course_id == db.course.cid).select(db.Faculty.ALL, db.Teach.ALL, db.course.ALL)
-   return dict(timelog_course=timelog_course)
-  elif (session.login==2):
-   x=db(db.auth_event.origin == session.token).select()
-   timelog_student=[]
-   for i in range(len(x)):
-    if ( x[i].description != "logged in"):
-     if ( x[i].description != "logged out"):
-        timelog_student.append(x[i])
-   return dict(timelog_student=timelog_student)
+    if(session.role == user_roles["admin"]):
+        x=db(db.auth_event.description!="logged in").select()
+        timelog_admin=[]
+        for i in range(len(x)):
+            if x[i].description!="logged out":
+                timelog_admin.append(x[i])
+        return dict(timelog_admin=timelog_admin)
+    elif session.role == user_roles["faculty"]:
+        x=db(db.Faculty.femail_id == session.username).select() #& db.Faculty.id == db.Teach.faculty_id & db.Teach.course_id == db.course.cid).select(db.Faculty.ALL, db.Teach.ALL, db.course.ALL)
+        y=db(x[0].id == db.Teach.faculty_id).select()
+        course=[]
+        for i in range(len(y)):
+            timelog=db(y[i].course_id == db.Course.id).select(db.Course.ALL)
+            course.append(timelog[0].cname)
+        timelog_course=[]
+        for i in db().select(db.auth_event.ALL):
+            for j in course:
+                if re.findall(j,i.description):
+                    timelog_course.append(i)
+        return dict(timelog_course=timelog_course)
+    elif session.role == user_roles["student"]:
+        x=db(db.auth_event.origin == session.username).select()
+        timelog_student=[]
+        for i in range(len(x)):
+            if ( x[i].description != "logged in"):
+                if ( x[i].description != "logged out"):
+                    timelog_student.append(x[i])
+        return dict(timelog_student=timelog_student)
 
 #--------------------------------------------------------------------------
 def adminpriv():
-    if session.login != 1 :     
-       redirect(URL(r = request , f = 'index'))
-       return dict()
+    if session.role != user_roles["admin"]:
+        redirect(URL(r = request , f = 'index'))
+        return dict()
     
     return dict()
+
 def about():
-	return dict() 
+    return dict() 
 
 
 def rem_dup():
-	dupapp=db().select(db.Applicant.aprollno, having=db.Applicant.aprollno.count()>1, groupby = db.Applicant.aprollno)
-	count=0;
-	for app in dupapp:
-		a=db(db.Applicant.aprollno==app.aprollno).select(db.Applicant.id)
-		for b in a:
-			c=db(db.AppliedFor.appid==b).select()
-			if len(c)==0:
-				db(db.Applicant.id==b).delete()
-				count+=1;
-				db.commit()
-	return dict(r=count)
+    dupapp=db().select(db.Applicant.aprollno, having=db.Applicant.aprollno.count()>1, groupby = db.Applicant.aprollno)
+    count=0;
+    for app in dupapp:
+        a=db(db.Applicant.aprollno==app.aprollno).select(db.Applicant.id)
+        for b in a:
+            c=db(db.AppliedFor.appid==b).select()
+            if len(c)==0:
+                db(db.Applicant.id==b).delete()
+                count+=1;
+                db.commit()
+    return dict(r=count)
 
 
 def edit_grade():
-    if session.login != 2:
-        redirect(URL(r = request, f = 'index'))
-        return dict()
+    # checking whether user is student or not
+    checkIsStudent()
+
     appid=db(db.Applicant.apemail_id == session.student_email).select(db.Applicant.id)[0]
     appcor=db((db.AppliedFor.appid == appid)&(db.AppliedFor.cid==db.Course.id)&(db.AppliedFor.grade == None)).select()
     if(not len(appcor)):
@@ -1957,4 +2146,3 @@ def edit_grade():
                SQLField('grade', label = 'Grade In The Course', requires = IS_IN_SET(['A','A-','B','B-','C','NA'])))
     grade_list = ['NA','A','A-','B','B-','C']
     return dict(form=form,appid=appid,appcor=appcor,grade_list=grade_list)
-
